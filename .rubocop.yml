@@ -55,3 +55,7 @@ Naming/VariableNumber:
 
 Metrics/ParameterLists:
   Max: 8
+
+Style/FileOpen:
+  Exclude:
+    - 'lib/legion/data/connection.rb'

@@ -57,7 +57,7 @@ module Legion
         def initialize(path)
           @path = path
           FileUtils.mkdir_p(File.dirname(path))
-          @file = File.open(path, 'a') # rubocop:disable Style/FileOpen -- long-lived handle, closed in #close
+          @file = File.open(path, 'a')
           @file.sync = true
           @mutex = Mutex.new
         end

@@ -8,7 +8,7 @@
 Manages persistent database storage for the LegionIO framework. Supports SQLite (default), MySQL, and PostgreSQL via Sequel ORM. Provides automatic schema migrations and data models for extensions, functions, runners, nodes, tasks, settings, digital workers, task relationships, Apollo shared knowledge tables (PostgreSQL only), tenants, webhooks, audit log, and archive tables. Also provides a parallel local SQLite database (`Legion::Data::Local`) for agentic cognitive state persistence.
 
 **GitHub**: https://github.com/LegionIO/legion-data
-**Version**: 1.4.12
+**Version**: 1.6.0
 **License**: Apache-2.0
 
 ## Supported Databases
@@ -28,13 +28,22 @@ Legion::Data (singleton module)
 ├── .setup             # Connect, migrate, load models, setup cache, setup local
 ├── .connection        # Sequel database handle (shared/central)
 ├── .local             # Legion::Data::Local accessor
+├── .stats             # Combined { shared: Connection.stats, local: Local.stats }
+├── .reload_static_cache  # Refresh in-memory StaticCache after hot-loading extensions
 ├── .shutdown          # Close both connections
 │
 ├── Connection         # Sequel database connection management (shared)
 │   ├── .adapter       # Reads from settings (sqlite, mysql2, postgres)
 │   ├── .setup         # Establish connection (dev_mode fallback to SQLite if network DB unreachable)
 │   ├── .sequel        # Raw Sequel::Database accessor
-│   └── .shutdown      # Close connection
+│   ├── .stats         # Pool metrics, tuning snapshot, adapter-specific DB stats
+│   ├── .pool_stats    # Connection pool usage (size, available, in_use, waiting)
+│   ├── .shutdown      # Close connection
+│   ├── GENERIC_KEYS   # Pool options forwarded to Sequel (:max_connections, :pool_timeout, etc.)
+│   ├── ADAPTER_KEYS   # Per-adapter option whitelists (sqlite, postgres, mysql2)
+│   ├── ADAPTER_DEFAULTS # Built-in defaults per adapter when user hasn't set a value
+│   ├── SlowQueryLogger    # Wraps Legion::Logging with [slow-query] prefix for Sequel warn
+│   └── QueryFileLogger    # Thread-safe file logger for query_log mode (~/.legionio/logs/)
 │
 ├── Local              # Local SQLite database for agentic cognitive state
 │   ├── .setup         # Lazy init — creates legionio_local.db on first access
@@ -43,6 +52,7 @@ Legion::Data (singleton module)
 │   ├── .db_path       # Path to the local SQLite file
 │   ├── .model(:table) # Create Sequel::Model bound to local connection
 │   ├── .register_migrations(name:, path:) # Extensions register their migration dirs
+│   ├── .stats         # Local SQLite metrics (PRAGMAs, file size, registered migrations)
 │   ├── .shutdown      # Close local connection
 │   └── .reset!        # Clear all state (testing)
 │
@@ -105,12 +115,16 @@ Legion::Data (singleton module)
 ### Key Design Patterns
 
 - **Two-Database Architecture**: Shared (MySQL/PG/SQLite) for control plane data + Local (always SQLite) for agentic cognitive state. Two files, always separate, no cross-database joins.
-- **Adapter-Driven**: `Connection.adapter` reads from settings; SQLite uses `Sequel.sqlite(path)`, others use `Sequel.connect`
+- **Adapter-Driven**: `Connection.adapter` reads from settings; all adapters (including SQLite) use `Sequel.connect` so all options flow through uniformly
+- **Flat Settings**: all connection/pool/adapter options live directly on `data.*` — legion-data resolves which options apply to the current adapter via `ADAPTER_KEYS` whitelists
+- **Per-Adapter Defaults**: `ADAPTER_DEFAULTS` provides built-in defaults (e.g., sqlite timeout 5000, postgres connect_timeout 20) when user hasn't set a value; nil in settings means "use adapter default"
 - **Dev Mode Fallback**: When `dev_mode: true` and network DB unreachable, shared connection falls back to SQLite (`legionio.db`) with warning log
+- **Connection Health**: `connection_validator` (pings idle connections) and `connection_expiration` (retires old connections) extensions auto-enabled for non-SQLite adapters
 - **Cross-DB Migrations**: Shared migrations use IntegerMigrator (Sequel DSL), local migrations use TimestampMigrator (per-extension registration)
 - **Auto-Migration**: Runs Sequel migrations on startup (`auto_migrate: true` by default)
 - **Sequel ORM**: Shared models are `Sequel::Model` subclasses (inherit global connection). Local models use `Legion::Data::Local.model(:table)` (explicit connection binding).
-- **Optional Caching**: `setup_cache` checks for `Legion::Cache` presence but Sequel model caching is currently disabled (code is commented out, pending implementation)
+- **Two-Tier Caching**: StaticCache (in-process frozen hash, no external deps) for lookup models (Extension, Runner, Function) + external Caching plugin (via `Legion::Cache` — Redis/Memcached/Memory) for dynamic models (Relationship, Node, Setting). Both disabled by default.
+- **Query Log Isolation**: `query_log` flag pipes all SQL to dedicated files (`~/.legionio/logs/data-shared-query.log`, `data-local-query.log`) via `QueryFileLogger` — completely isolated from the `Legion::Logging` domain
 - **Cryptographic Erasure**: Deleting `legionio_local.db` is a hard guarantee — no residual data. Used by `lex-privatecore`.
 - **CLI Executable**: Ships with `legionio_migrate` executable in `exe/` for running database migrations standalone
 
@@ -123,14 +137,40 @@ Legion::Data (singleton module)
   "dev_mode": false,
   "dev_fallback": true,
   "connect_on_start": true,
-  "connection": {
-    "log": false,
-    "log_connection_info": false,
-    "log_warn_duration": 1,
-    "sql_log_level": "debug",
-    "max_connections": 10,
-    "preconnect": false
-  },
+
+  "max_connections": 25,
+  "pool_timeout": 5,
+  "preconnect": "concurrently",
+  "single_threaded": false,
+  "test": true,
+  "name": null,
+
+  "log": false,
+  "query_log": false,
+  "log_connection_info": false,
+  "log_warn_duration": 1,
+  "sql_log_level": "debug",
+
+  "connection_validation": true,
+  "connection_validation_timeout": 600,
+  "connection_expiration": true,
+  "connection_expiration_timeout": 14400,
+
+  "connect_timeout": null,
+  "read_timeout": null,
+  "write_timeout": null,
+  "encoding": null,
+  "sql_mode": null,
+  "sslmode": null,
+  "sslrootcert": null,
+  "search_path": null,
+  "timeout": null,
+  "readonly": null,
+  "disable_dqs": null,
+
+  "read_replica_url": null,
+  "replicas": [],
+
   "creds": {
     "database": "legionio.db"
   },
@@ -147,6 +187,7 @@ Legion::Data (singleton module)
   "local": {
     "enabled": true,
     "database": "legionio_local.db",
+    "query_log": false,
     "migrations": {
       "auto_migrate": true
     }
@@ -154,10 +195,35 @@ Legion::Data (singleton module)
   "cache": {
     "connected": false,
     "auto_enable": false,
+    "static_cache": false,
     "ttl": 60
+  },
+  "archival": {
+    "retention_days": 90,
+    "batch_size": 1000,
+    "storage_backend": null
   }
 }
 ```
+
+Settings are **flat** — all pool, logging, health, and adapter-specific options live directly on `data.*`. Adapter-specific options (e.g., `connect_timeout`, `encoding`, `sslmode`) default to `null` and resolve to per-adapter built-in defaults at connection time:
+
+| Adapter | Applied Options | Defaults |
+|---------|----------------|----------|
+| sqlite | `timeout`, `readonly`, `disable_dqs` | `timeout: 5000`, `readonly: false`, `disable_dqs: true` |
+| postgres | `connect_timeout`, `sslmode`, `sslrootcert`, `search_path` | `connect_timeout: 20`, `sslmode: "disable"` |
+| mysql2 | `connect_timeout`, `read_timeout`, `write_timeout`, `encoding`, `sql_mode` | `connect_timeout: 120`, `encoding: "utf8mb4"` |
+
+### Caching
+
+Two independent caching tiers, both disabled by default:
+
+| Tier | Setting | Models | Backend | Use Case |
+|------|---------|--------|---------|----------|
+| **StaticCache** | `data.cache.static_cache: true` | Extension, Runner, Function | In-process frozen Ruby hash | Zero-DB-hit reads for lookup tables. No external deps. Call `Legion::Data.reload_static_cache` after hot-loading extensions. |
+| **External Cache** | `data.cache.auto_enable: true` + `Legion::Cache` loaded | Relationship (10s), Node (10s), Setting (ttl) | `Legion::Cache` (Redis/Memcached/Memory) | Cross-process cache sharing for dynamic models. Requires `legion-cache` gem connected. |
+
+For thousands of agents, enable `static_cache` first — biggest impact, zero dependencies. External cache only adds value when you need cross-process sharing via Redis/Memcached.
 
 Per-adapter credential defaults are defined in `Settings::CREDS`:
 - **sqlite**: `{ database: "legionio.db" }`
