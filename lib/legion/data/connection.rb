@@ -56,8 +56,10 @@ module Legion
 
         def initialize(path)
           @path = path
-          FileUtils.mkdir_p(File.dirname(path))
-          @file = File.open(path, 'a')
+          dir = File.dirname(path)
+          FileUtils.mkdir_p(dir)
+          FileUtils.chmod(0o700, dir) if File.directory?(dir)
+          @file = File.open(path, File::WRONLY | File::APPEND | File::CREAT, 0o600)
           @file.sync = true
           @mutex = Mutex.new
         end
@@ -116,7 +118,8 @@ module Legion
                           )
                         end
                         @adapter = :sqlite
-                        ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
+                        sqlite_opts = sequel_opts
+                        ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
                       end
                     end
           Legion::Settings[:data][:connected] = true
@@ -148,7 +151,7 @@ module Legion
             database:  database_stats
           }
         rescue StandardError => e
-          { connected: data[:connected], adapter: adapter, error: e.message }
+          { connected: (data[:connected] if data.is_a?(Hash)), adapter: adapter, error: e.message }
         end
 
         def pool_stats
