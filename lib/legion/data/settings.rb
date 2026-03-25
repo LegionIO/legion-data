@@ -25,20 +25,55 @@ module Legion
 
       def self.default
         {
-          adapter:          'sqlite',
-          connected:        false,
-          cache:            cache,
-          connection:       connection,
-          creds:            creds,
-          migrations:       migrations,
-          models:           models,
-          local:            local,
-          dev_mode:         false,
-          dev_fallback:     true,
-          connect_on_start: true,
-          read_replica_url: nil,
-          replicas:         [],
-          archival:         archival
+          adapter:                       'sqlite',
+          connected:                     false,
+
+          # Connection pool
+          max_connections:               25,
+          pool_timeout:                  5,
+          preconnect:                    'concurrently',
+          single_threaded:               false,
+          test:                          true,
+          name:                          nil,
+
+          # Logging
+          log:                           false,
+          query_log:                     false,
+          log_connection_info:           false,
+          log_warn_duration:             1,
+          sql_log_level:                 'debug',
+
+          # Connection health (network adapters only, ignored for sqlite)
+          connection_validation:         true,
+          connection_validation_timeout: 600,
+          connection_expiration:         true,
+          connection_expiration_timeout: 14_400,
+
+          # Adapter-specific (nil = use adapter built-in default)
+          connect_timeout:               nil,
+          read_timeout:                  nil,
+          write_timeout:                 nil,
+          encoding:                      nil,
+          sql_mode:                      nil,
+          sslmode:                       nil,
+          sslrootcert:                   nil,
+          search_path:                   nil,
+          timeout:                       nil,
+          readonly:                      nil,
+          disable_dqs:                   nil,
+
+          # Grouped settings
+          creds:                         creds,
+          cache:                         cache,
+          migrations:                    migrations,
+          models:                        models,
+          local:                         local,
+          dev_mode:                      false,
+          dev_fallback:                  true,
+          connect_on_start:              true,
+          read_replica_url:              nil,
+          replicas:                      [],
+          archival:                      archival
         }
       end
 
@@ -46,6 +81,7 @@ module Legion
         {
           enabled:    true,
           database:   'legionio_local.db',
+          query_log:  false,
           migrations: { auto_migrate: true }
         }
       end
@@ -66,17 +102,6 @@ module Legion
         }
       end
 
-      def self.connection
-        {
-          log:                 false,
-          log_connection_info: false,
-          log_warn_duration:   1,
-          sql_log_level:       'debug',
-          max_connections:     10,
-          preconnect:          false
-        }
-      end
-
       def self.creds(adapter = nil)
         adapter = (adapter || :sqlite).to_sym
         CREDS.fetch(adapter, CREDS[:sqlite]).dup
@@ -92,9 +117,10 @@ module Legion
 
       def self.cache
         {
-          connected:   false,
-          auto_enable: Legion::Settings[:cache][:connected],
-          ttl:         60
+          connected:    false,
+          auto_enable:  Legion::Settings[:cache][:connected],
+          static_cache: false,
+          ttl:          60
         }
       end
     end

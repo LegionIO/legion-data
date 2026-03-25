@@ -47,22 +47,48 @@ module Legion
         Legion::Data::Local
       end
 
+      def stats
+        {
+          shared: Legion::Data::Connection.stats,
+          local:  Legion::Data::Local.stats
+        }
+      end
+
       def setup_cache
-        return if Legion::Settings[:data][:cache][:enabled]
+        cache_settings = Legion::Settings[:data][:cache]
+        setup_static_cache if cache_settings[:static_cache]
+        setup_external_cache if cache_settings[:auto_enable] && defined?(::Legion::Cache)
+      end
 
-        nil unless defined?(::Legion::Cache)
+      def setup_static_cache
+        [Model::Extension, Model::Runner, Model::Function].each do |model|
+          model.plugin :static_cache
+          Legion::Logging.debug("StaticCache enabled for #{model}") if defined?(Legion::Logging)
+        rescue StandardError => e
+          Legion::Logging.warn("StaticCache failed for #{model}: #{e.message}") if defined?(Legion::Logging)
+        end
+        Legion::Logging.info 'Legion::Data static cache loaded' if defined?(Legion::Logging)
+      end
 
-        # Legion::Data::Model::Relationship.plugin :caching, Legion::Cache, ttl: 10
-        # Legion::Data::Model::Runner.plugin :caching, Legion::Cache, ttl: 60
-        # Legion::Data::Model::Chain.plugin :caching, Legion::Cache, ttl: 60
-        # Legion::Data::Model::Function.plugin :caching, Legion::Cache, ttl: 120
-        # Legion::Data::Model::Extension.plugin :caching, Legion::Cache, ttl: 120
-        # Legion::Data::Model::Node.plugin :caching, Legion::Cache, ttl: 10
-        # Legion::Data::Model::TaskLog.plugin :caching, Legion::Cache, ttl: 12
-        # Legion::Data::Model::Task.plugin :caching, Legion::Cache, ttl: 10
-        # Legion::Data::Model::User.plugin :caching, Legion::Cache, ttl: 120
-        # Legion::Data::Model::Group.plugin :caching, Legion::Cache, ttl: 120
-        # Legion::Logging.info 'Legion::Data connected to Legion::Cache'
+      def reload_static_cache
+        [Model::Extension, Model::Runner, Model::Function].each do |model|
+          model.load_cache if model.respond_to?(:load_cache)
+        end
+      end
+
+      def setup_external_cache
+        ttl = Legion::Settings[:data][:cache][:ttl] || 60
+        {
+          Model::Relationship => 10,
+          Model::Node         => 10,
+          Model::Setting      => ttl
+        }.each do |model, model_ttl|
+          model.plugin :caching, ::Legion::Cache, ttl: model_ttl
+          Legion::Logging.debug("Caching enabled for #{model} (ttl: #{model_ttl})") if defined?(Legion::Logging)
+        rescue StandardError => e
+          Legion::Logging.warn("Caching failed for #{model}: #{e.message}") if defined?(Legion::Logging)
+        end
+        Legion::Logging.info 'Legion::Data external cache connected' if defined?(Legion::Logging)
       end
 
       def shutdown

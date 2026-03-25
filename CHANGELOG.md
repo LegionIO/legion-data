@@ -1,5 +1,35 @@
 # Legion::Data Changelog
 
+## [1.6.0] - 2026-03-25
+
+### Fixed
+- **Connection pool starvation**: `max_connections`, `pool_timeout`, `preconnect`, and all other Sequel options were never forwarded to `Sequel.connect` — pool was stuck at Sequel's default of 4 connections regardless of settings. 5+ second "slow queries" in daemon logs were actually pool wait time (5s `pool_timeout`) + fast query (~19ms). Now all configured options flow through properly.
+- **Local DB had same issue**: `Legion::Data::Local.setup` used bare `Sequel.sqlite(path)` with no options. Now forwards SQLite adapter options (`timeout`, `readonly`, `disable_dqs`) via `Sequel.connect`.
+
+### Changed
+- **Flat settings structure**: all connection settings now live directly on `data.*` instead of nested `data.connection.*` or `data.adapter_opts.*`. Users configure `data.max_connections`, `data.pool_timeout`, `data.connect_timeout`, etc. regardless of adapter — legion-data figures out which options apply.
+- Default `max_connections` raised from 10 to 25 (was never applied before anyway)
+- Default `preconnect` set to `'concurrently'` (warm pool at boot)
+- Default `pool_timeout` remains 5s (now actually enforced)
+- Per-adapter defaults applied at connection time via `ADAPTER_DEFAULTS`: sqlite (`timeout: 5000`, `readonly: false`, `disable_dqs: true`), postgres (`connect_timeout: 20`, `sslmode: 'disable'`), mysql2 (`connect_timeout: 120`, `encoding: 'utf8mb4'`)
+- Adapter-specific settings (`connect_timeout`, `read_timeout`, `write_timeout`, `encoding`, `sql_mode`, `sslmode`, `sslrootcert`, `search_path`, `timeout`, `readonly`, `disable_dqs`) default to nil in settings and resolve to adapter built-in defaults — only forwarded when the current adapter supports them
+
+### Added
+- `GENERIC_KEYS`, `ADAPTER_KEYS`, `ADAPTER_DEFAULTS` constants on `Connection` for option whitelisting and defaults
+- Connection health extensions (non-SQLite only): `connection_validator` (pings idle connections, default timeout 600s) and `connection_expiration` (retires old connections, default timeout 14400s) — both enabled by default via `data.connection_validation` and `data.connection_expiration`
+- `Legion::Data::Connection.stats` — comprehensive connection metrics: pool stats (type, size, available, in_use, waiting), tuning snapshot, and adapter-specific database stats (postgres: `pg_stat_activity`, `pg_database_size`, server settings; sqlite: PRAGMAs, file size; mysql: `information_schema`, `SHOW STATUS`)
+- `Legion::Data::Connection.pool_stats` — works across all Sequel pool types (`timed_queue`, `threaded`, `single`, sharded variants)
+- `Legion::Data::Local.stats` — local SQLite metrics: PRAGMAs, file size, database size, registered migrations
+- `Legion::Data.stats` — combined `{ shared: Connection.stats, local: Local.stats }` for `/api/stats` endpoint
+- `data.query_log` flag (default `false`): when enabled, pipes ALL SQL queries to `~/.legionio/logs/data-shared-query.log` (shared) or `data-local-query.log` (local) via dedicated `QueryFileLogger` — isolated from the main `Legion::Logging` domain so debug query floods don't pollute application logs
+- `Legion::Data::Connection::QueryFileLogger` — thread-safe file-based logger with timestamped entries, used by both shared and local query log modes
+- `Legion::Data::Connection::SlowQueryLogger` — wraps tagged `Legion::Logging::Logger`, prefixes warn-level messages with `[slow-query]`
+- `data.local.query_log` flag (default `false`): same as above but for the local SQLite connection
+- **StaticCache infrastructure** for lookup models: `Legion::Data.setup_static_cache` applies `Sequel::Plugins::StaticCache` to `Extension`, `Runner`, `Function` — loads entire tables into frozen in-memory hashes for zero-DB-hit reads. Enabled via `data.cache.static_cache: true` (default `false`).
+- `Legion::Data.reload_static_cache` — refreshes in-memory static cache after hot-loading new extensions
+- **External cache infrastructure**: `Legion::Data.setup_external_cache` applies `Sequel::Plugins::Caching` to `Relationship` (ttl 10s), `Node` (ttl 10s), `Setting` (ttl configurable) via `Legion::Cache` backend. Activates when `data.cache.auto_enable` is true and `Legion::Cache` is loaded.
+- `data.cache.static_cache` setting (default `false`)
+
 ## [1.5.3] - 2026-03-25
 
 ### Added

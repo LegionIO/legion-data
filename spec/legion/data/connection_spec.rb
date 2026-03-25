@@ -25,11 +25,11 @@ RSpec.describe 'Legion::Data::Connection' do
   end
 
   it 'can setup with logger' do
-    Legion::Settings[:data][:connection][:log] = true
-    Legion::Settings[:data][:connection][:sql_log_level] = 'debug'
-    Legion::Settings[:data][:connection][:log_warn_duration] = 42
+    Legion::Settings[:data][:log] = true
+    Legion::Settings[:data][:sql_log_level] = 'debug'
+    Legion::Settings[:data][:log_warn_duration] = 42
     Legion::Data::Connection.setup
-    expect(Legion::Data::Connection.sequel.sql_log_level).to eq 'debug'
+    expect(Legion::Data::Connection.sequel.sql_log_level).to eq :debug
     expect(Legion::Data::Connection.sequel.log_warn_duration).to eq 42
   end
 
@@ -48,7 +48,7 @@ RSpec.describe 'Legion::Data::Connection' do
     Legion::Data::Connection.setup
     expect(Legion::Settings[:data][:connected]).to eq true
     expect(Legion::Data::Connection.sequel.log_warn_duration)
-      .to eq Legion::Settings[:data][:connection][:log_warn_duration]
-    expect(Legion::Data::Connection.sequel.sql_log_level).to eq Legion::Settings[:data][:connection][:sql_log_level]
+      .to eq Legion::Settings[:data][:log_warn_duration]
+    expect(Legion::Data::Connection.sequel.sql_log_level).to eq Legion::Settings[:data][:sql_log_level].to_sym
   end
 end
