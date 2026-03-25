@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.6.4] - 2026-03-25
+
+### Added
+- Migration 047: Apollo identity columns (submitted_by, submitted_from), content hash dedup, apollo_operations table, apollo_entries_archive table, comprehensive indexes including partial HNSW on active entries only
+
 ## [1.6.2] - 2026-03-25
 
 ### Changed
