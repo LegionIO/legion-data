@@ -1,5 +1,17 @@
 # Legion::Data Changelog
 
+## [1.6.9] - 2026-03-27
+
+### Added
+- Migration 048: financial logging schemas (7 tables) for UAIS cost recovery model
+  - `finlog_identities` — worker/owner identity for cost attribution (worker_id, owner_msid, cost_center, business_segment)
+  - `finlog_assets` — Entra app / service principal metadata (entra_app_id, asset_type, extension_name, risk_tier)
+  - `finlog_environments` — cloud/infrastructure environment context (csp, account_id, askid, region, environment)
+  - `finlog_accounting` — financial classification per execution (aide_id, ucmg_id, billing_group, classification, recovery_ratio, rate_card_multiplier, provider_discount, chargeback_amount)
+  - `finlog_executions` — per-request execution record / central fact table (worker_id, task_id, provider, model_id, tokens, costs, latency)
+  - `finlog_tags` — flexible key-value metadata tags per execution
+  - `finlog_usages` — aggregated consumption rollup (daily period, per worker/provider/model)
+
 ## [1.6.8] - 2026-03-27
 
 ### Changed
