@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.6.7] - 2026-03-26
+
+### Removed
+- Legacy Vault credential fetch in `Connection#creds_builder` — hardcoded `database/creds/legion` path removed. Database credentials are now exclusively managed by the LeaseManager via `lease://postgresql#username` / `lease://postgresql#password` URI references in data settings.
+
 ## [1.6.6] - 2026-03-25
 
 ### Added

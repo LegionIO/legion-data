@@ -259,14 +259,6 @@ module Legion
           port = final_creds[:port]
           merge_tls_creds(final_creds, adapter: adapter, port: port)
 
-          return final_creds if Legion::Settings[:vault].nil?
-
-          if Legion::Settings[:vault][:connected] && ::Vault.sys.mounts.key?(:database)
-            temp_vault_creds = Legion::Crypt.read('database/creds/legion')
-            final_creds[:user] = temp_vault_creds[:username]
-            final_creds[:password] = temp_vault_creds[:password]
-          end
-
           final_creds
         end
 
