@@ -232,6 +232,51 @@ module Legion
           log.info 'Legion::Data connection closed'
         end
 
+        # Tear down the existing Sequel connection pool and reconnect using
+        # the credentials currently in Legion::Settings.  This is intended to
+        # be called by the Vault LeaseManager after it pushes freshly-rotated
+        # PostgreSQL (or MySQL) credentials into Settings — Sequel bakes creds
+        # into the pool at Sequel.connect time, so a simple disconnect/reconnect
+        # would reuse the stale originals.
+        #
+        # The method mirrors the setup flow (sequel_opts -> Sequel.connect ->
+        # configure_extensions -> connect_with_replicas) but skips the
+        # dev-fallback path since credential rotation only applies to network
+        # databases that were already successfully connected.
+        #
+        # Errors are logged and swallowed so the daemon stays up — the next
+        # rotation or health-check cycle can retry.
+        def reconnect_with_fresh_creds
+          log.info 'Legion::Data::Connection reconnecting with fresh credentials'
+
+          # 1. Tear down old pool
+          @sequel&.disconnect
+          @replica_servers = nil
+
+          # 2. Re-read adapter from settings (clear cached value so it's fresh)
+          @adapter = nil
+
+          # 3. Build new connection with current Settings
+          opts = sequel_opts
+          @sequel = if adapter == :sqlite
+                      ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
+                    else
+                      ::Sequel.connect(connection_opts_for(adapter: adapter, opts: opts))
+                    end
+
+          Legion::Settings[:data][:connected] = true
+          log_connection_info
+          configure_extensions
+          connect_with_replicas
+
+          log.info 'Legion::Data::Connection reconnected successfully'
+          true
+        rescue StandardError => e
+          handle_exception(e, level: :error, handled: true,
+                              operation: :reconnect_with_fresh_creds, adapter: adapter)
+          false
+        end
+
         def connect_with_replicas
           return unless adapter == :postgres
 
