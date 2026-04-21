@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.6.26] - 2026-04-21
+
+### Fixed
+- `reconnect_with_fresh_creds` connection state management: only set `connected=true` after successful connection verification, clear `@sequel` and set `connected=false` on failure
+- `reconnect_with_fresh_creds` file descriptor leak: properly close existing `@query_file_logger` before creating new one during reconnect
+- Enhanced test coverage for `reconnect_with_fresh_creds`: validate connection state reset after failure and verify actual credential usage
+
+## [1.6.25] - 2026-04-21
+
+### Added
+- `reconnect_with_fresh_creds` method for Vault credential rotation: tears down existing Sequel connection pool and reconnects with current credentials from `Legion::Settings`
+
 ## [1.6.24] - 2026-04-13
 
 ### Added

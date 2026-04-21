@@ -249,21 +249,30 @@ module Legion
         def reconnect_with_fresh_creds
           log.info 'Legion::Data::Connection reconnecting with fresh credentials'
 
-          # 1. Tear down old pool
+          # 1. Tear down old pool and clear connection state
           @sequel&.disconnect
           @replica_servers = nil
 
-          # 2. Re-read adapter from settings (clear cached value so it's fresh)
+          # 2. Close existing query file logger to prevent fd leak
+          @query_file_logger&.close
+          @query_file_logger = nil
+
+          # 3. Re-read adapter from settings (clear cached value so it's fresh)
           @adapter = nil
 
-          # 3. Build new connection with current Settings
+          # 4. Build new connection with current Settings
           opts = sequel_opts
-          @sequel = if adapter == :sqlite
-                      ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
-                    else
-                      ::Sequel.connect(connection_opts_for(adapter: adapter, opts: opts))
-                    end
+          new_sequel = if adapter == :sqlite
+                         ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
+                       else
+                         ::Sequel.connect(connection_opts_for(adapter: adapter, opts: opts))
+                       end
 
+          # 5. Verify connection is working before committing to it
+          new_sequel.test_connection
+
+          # 6. Only set connected=true and @sequel after successful connection test
+          @sequel = new_sequel
           Legion::Settings[:data][:connected] = true
           log_connection_info
           configure_extensions
@@ -272,6 +281,9 @@ module Legion
           log.info 'Legion::Data::Connection reconnected successfully'
           true
         rescue StandardError => e
+          # Clear connection state on failure
+          @sequel = nil
+          Legion::Settings[:data][:connected] = false
           handle_exception(e, level: :error, handled: true,
                               operation: :reconnect_with_fresh_creds, adapter: adapter)
           false

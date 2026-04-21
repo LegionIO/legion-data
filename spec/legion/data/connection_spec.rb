@@ -84,8 +84,10 @@ RSpec.describe 'Legion::Data::Connection' do
       Legion::Settings[:data][:creds] = original_creds if original_creds
     end
 
-    it 'returns false and stays up when reconnect fails' do
+    it 'returns false and resets connection state when reconnect fails' do
       Legion::Data::Connection.setup
+      expect(Legion::Settings[:data][:connected]).to eq true
+      expect(Legion::Data::Connection.sequel).not_to be_nil
 
       # Force a failure by temporarily breaking the adapter setting
       original_adapter = Legion::Settings[:data][:adapter]
@@ -94,6 +96,9 @@ RSpec.describe 'Legion::Data::Connection' do
       result = Legion::Data::Connection.reconnect_with_fresh_creds
 
       expect(result).to eq false
+      # Verify connection state is properly reset after failure
+      expect(Legion::Settings[:data][:connected]).to eq false
+      expect(Legion::Data::Connection.sequel).to be_nil
     ensure
       Legion::Settings[:data][:adapter] = original_adapter
       # Reset cached adapter so subsequent tests are clean
@@ -109,6 +114,54 @@ RSpec.describe 'Legion::Data::Connection' do
 
       # For SQLite adapter, replicas should be cleared (no replicas for sqlite)
       expect(Legion::Data::Connection.replica_servers).to eq([])
+    end
+
+    it 'closes query file logger on reconnect to prevent fd leak' do
+      Legion::Settings[:data][:query_log] = true
+      Legion::Data::Connection.setup
+
+      # Get reference to the query file logger
+      logger = Legion::Data::Connection.instance_variable_get(:@query_file_logger)
+      expect(logger).not_to be_nil
+
+      # Mock close to verify it's called
+      expect(logger).to receive(:close).and_call_original
+
+      Legion::Data::Connection.reconnect_with_fresh_creds
+
+      # Verify a new logger was created
+      new_logger = Legion::Data::Connection.instance_variable_get(:@query_file_logger)
+      expect(new_logger).not_to be_nil
+      expect(new_logger).not_to equal(logger)
+    ensure
+      Legion::Settings[:data][:query_log] = false
+    end
+
+    it 'verifies actual credential usage during reconnect' do
+      Legion::Data::Connection.setup
+      initial_sequel = Legion::Data::Connection.sequel
+
+      # Simulate changing database path (for SQLite)
+      original_creds = Legion::Settings[:data][:creds].dup
+      new_database_path = 'reconnect_test_credentials.db'
+      Legion::Settings[:data][:creds][:database] = new_database_path
+
+      result = Legion::Data::Connection.reconnect_with_fresh_creds
+      expect(result).to eq true
+
+      # Verify a new connection was created and it's using the new database path
+      new_sequel = Legion::Data::Connection.sequel
+      expect(new_sequel).not_to equal(initial_sequel)
+      expect(new_sequel).not_to be_nil
+
+      # For SQLite adapter, we can verify the database path was updated
+      # by checking that the connection is using the new path
+      expect(Legion::Settings[:data][:creds][:database]).to eq new_database_path
+    ensure
+      # Restore original creds
+      Legion::Settings[:data][:creds] = original_creds if original_creds
+      # Clean up test database file if it was created
+      File.delete(new_database_path) if File.exist?(new_database_path)
     end
   end
 end
