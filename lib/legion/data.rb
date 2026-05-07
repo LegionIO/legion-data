@@ -54,7 +54,6 @@ module Legion
         return if Legion::Settings[:data].dig(:local, :enabled) == false
 
         Legion::Data::Local.setup
-        log.info "Legion::Data::Local connected to #{Legion::Data::Local.db_path}"
       rescue StandardError => e
         handle_exception(e, level: :fatal, operation: :setup_local)
         raise

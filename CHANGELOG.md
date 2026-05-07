@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-05-07
+
+### Fixed
+- Remove duplicate `Legion::Data::Local connected to` log line; `Local.setup` already emits it.
+
 ## [1.8.2] - 2026-05-07
 
 ### Changed
