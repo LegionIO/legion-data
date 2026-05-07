@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-05-07
+
+### Fixed
+- `Legion::Data::Local` (SQLite) now always connects on startup regardless of shared DB outcome. `setup_local` is called in an `ensure` block so a failure in `connection_setup`, `migrate`, `load_models`, or `setup_cache` no longer silently skips Local initialization. Previously, any exception in those steps left Local disconnected with no log evidence, causing extensions like `lex-agentic-memory` to fall back to shared PG and hit `PG::InsufficientPrivilege` on every flush.
+- `setup_local` now logs at `INFO` level on success (`Legion::Data::Local connected to <path>`) matching the pattern of the shared connection, and at `ERROR` (previously `WARN`) on failure so the failure is not invisible.
+
 ## [1.8.1] - 2026-05-07
 
 ### Fixed

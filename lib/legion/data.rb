@@ -48,8 +48,11 @@ module Legion
         migrate
         load_models
         setup_cache
-        setup_local
         log.info 'Legion::Data setup complete'
+      rescue StandardError => e
+        handle_exception(e, level: :warn, operation: :setup, handled: true)
+      ensure
+        setup_local
       end
 
       def connection_setup
@@ -200,8 +203,9 @@ module Legion
         return if Legion::Settings[:data].dig(:local, :enabled) == false
 
         Legion::Data::Local.setup
+        log.info "Legion::Data::Local connected to #{Legion::Data::Local.db_path}"
       rescue StandardError => e
-        handle_exception(e, level: :warn, operation: :setup_local)
+        handle_exception(e, level: :error, operation: :setup_local)
       end
     end
   end
