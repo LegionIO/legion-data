@@ -48,9 +48,11 @@ module Legion
           @connection.run('PRAGMA journal_mode=WAL')
           @connection.run('PRAGMA busy_timeout=30000')
           @connection.run('PRAGMA synchronous=NORMAL')
+          @connection.run('PRAGMA cache_size=-20000')
+          @connection.run('PRAGMA mmap_size=268435456')
           @connected = true
           run_migrations
-          log.info "Legion::Data::Local connected to #{db_file} (WAL mode, 30s busy_timeout)"
+          log.info "Legion::Data::Local connected to #{db_file} (WAL mode, 30s busy_timeout, 20MB cache, 256MB mmap)"
         rescue StandardError => e
           handle_exception(e, level: :error, handled: false, operation: :local_setup, database: db_file)
           raise
@@ -99,7 +101,7 @@ module Legion
           stats[:file_size] = File.size(@db_path) if @db_path && File.exist?(@db_path)
 
           %w[page_size page_count freelist_count journal_mode
-             wal_autocheckpoint cache_size busy_timeout].each do |pragma|
+             wal_autocheckpoint cache_size busy_timeout mmap_size].each do |pragma|
             val = begin
               @connection.fetch("PRAGMA #{pragma}").single_value
             rescue StandardError => e
