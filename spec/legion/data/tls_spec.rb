@@ -9,7 +9,7 @@ RSpec.describe Legion::Data::Connection do
 
     before do
       stub_const('Legion::Crypt::TLS', Module.new do
-        def self.resolve(config, **_opts)
+        def self.resolve(config, **)
           if config[:enabled]
             { enabled: true, verify: :peer, ca: '/etc/ssl/ca.pem', cert: nil, key: nil }
           else
@@ -69,7 +69,7 @@ RSpec.describe Legion::Data::Connection do
         )
 
         stub_const('Legion::Crypt::TLS', Module.new do
-          def self.resolve(_config, **_opts)
+          def self.resolve(_config, **)
             { enabled: true, verify: :none, ca: nil, cert: nil, key: nil }
           end
         end)

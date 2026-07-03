@@ -18,7 +18,7 @@ module Legion
 
           ::JSON.parse(embedding)
         rescue ::JSON::ParserError => e
-          handle_exception(e, level: :debug, handled: true, operation: :embedding_vector, id: self[:id])
+          handle_exception(e, level: :warn, handled: true, operation: :embedding_vector, id: self[:id])
           nil
         end
 

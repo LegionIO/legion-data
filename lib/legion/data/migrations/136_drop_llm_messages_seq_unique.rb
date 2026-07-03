@@ -14,7 +14,7 @@
 Sequel.migration do
   up do
     alter_table(:llm_messages) do
-      drop_constraint(:llm_messages_conversation_id_seq_key, type: :unique) # rubocop:disable Legion/Llm/TaxonomyEnum
+      drop_constraint(:llm_messages_conversation_id_seq_key, type: :unique)
       add_index %i[conversation_id seq], name: :idx_llm_messages_conversation_seq
     end
     # SQLite emulates the constraint drop by rebuilding the table, which drops
