@@ -41,8 +41,8 @@ module Legion
           name:                          nil,
 
           # Logging
-          log:                           true,
-          query_log:                     true,
+          log:                           false,
+          query_log:                     false,
           log_connection_info:           false,
           log_warn_duration:             1,
           sql_log_level:                 'debug',
