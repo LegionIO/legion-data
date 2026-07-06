@@ -30,7 +30,7 @@ RSpec.describe Legion::Data::Connection do
   end
 
   # Build a minimal Sequel::Database double with the methods we call.
-  def fake_sequel_db(**_opts)
+  def fake_sequel_db(**)
     db = instance_double(Sequel::Database)
     allow(db).to receive(:extension)
     allow(db).to receive(:add_servers)

@@ -53,7 +53,7 @@ module Legion
               require gem_name
               true
             rescue LoadError => e
-              handle_exception(e, level: :debug, handled: true, operation: :extract_handler_available, handler: name, gem: gem_name)
+              handle_exception(e, level: :warn, handled: true, operation: :extract_handler_available, handler: name, gem: gem_name)
               false
             end
           end

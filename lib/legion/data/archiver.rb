@@ -97,18 +97,15 @@ module Legion
           total_rows = 0
           paths = []
 
-          loop do
-            batch_result = archive_batch(
-              conn:            conn,
-              table:           table,
-              cutoff:          cutoff,
-              batch_size:      batch_size,
-              batch_n:         batches + 1,
-              now:             now,
-              storage_backend: storage_backend
-            )
-            break unless batch_result
-
+          while (batch_result = archive_batch(
+            conn:            conn,
+            table:           table,
+            cutoff:          cutoff,
+            batch_size:      batch_size,
+            batch_n:         batches + 1,
+            now:             now,
+            storage_backend: storage_backend
+          ))
             batches += 1
             total_rows += batch_result[:row_count]
             paths << batch_result[:path]

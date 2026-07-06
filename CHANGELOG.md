@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.6] - 2026-07-03
+
+### Changed
+- Migration 136: drops the `(conversation_id, seq)` UNIQUE constraint on `llm_messages`, replacing it with a NON-unique composite index. A conversation is a tree, not a line — a single parent can legitimately have two children at the same depth (e.g. a failed branch and the branch that continued), so two distinct messages can share `(conversation_id, seq)` and that is truth, not a duplicate. The unique constraint rejected legitimate siblings and forced the centralized ledger into a racy `MAX(seq)+1` generation that collided under concurrent writers (`PG::UniqueViolation` on `llm_messages_conversation_id_seq_key`). Message identity remains guaranteed by the unique `uuid`; `seq` becomes descriptive tree-depth. On SQLite the constraint drop rebuilds the table (dropping the inline `uuid` UNIQUE), so the migration re-asserts the uuid unique index — a no-op on PostgreSQL where `DROP CONSTRAINT` is surgical.
+
 ## [1.10.5] - 2026-06-16
 
 ### Added

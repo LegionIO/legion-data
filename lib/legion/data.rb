@@ -112,7 +112,7 @@ module Legion
       def connected?
         Legion::Settings[:data][:connected] == true
       rescue StandardError => e
-        handle_exception(e, level: :debug, handled: true, operation: :connected?)
+        handle_exception(e, level: :warn, handled: true, operation: :connected?)
         false
       end
 
