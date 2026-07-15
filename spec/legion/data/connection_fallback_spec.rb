@@ -47,7 +47,8 @@ RSpec.describe Legion::Data::Connection do
         Legion::Settings[:data][:dev_fallback] = true
         Legion::Settings[:data][:creds] = { database: test_db }
         allow(Sequel).to receive(:connect).and_wrap_original do |original, *args, **kwargs|
-          raise Sequel::DatabaseConnectionError, 'connection refused' if kwargs[:adapter] == :mysql2
+          options = args.first.is_a?(Hash) ? args.first : kwargs
+          raise Sequel::DatabaseConnectionError, 'connection refused' if options[:adapter] == :mysql2
 
           original.call(*args, **kwargs)
         end
