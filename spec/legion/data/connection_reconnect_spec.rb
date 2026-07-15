@@ -3,8 +3,13 @@
 require 'spec_helper'
 
 RSpec.describe 'Legion::Data::Connection.reconnect_with_fresh_creds' do
+  before(:each) do
+    @saved_creds = Legion::Settings[:data][:creds]&.dup
+  end
+
   after(:each) do
     Legion::Data::Connection.shutdown
+    Legion::Settings[:data][:creds] = @saved_creds
   end
 
   context 'when adapter is sqlite' do

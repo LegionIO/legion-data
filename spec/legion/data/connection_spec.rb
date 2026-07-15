@@ -22,7 +22,7 @@ RSpec.describe 'Legion::Data::Connection' do
   it 'has creds_builder' do
     creds = Legion::Data::Connection.creds_builder
     expect(creds).to be_a Hash
-    expect(creds[:database]).to eq 'legionio.db'
+    expect(creds[:database]).to eq Legion::Settings[:data][:creds][:database]
   end
 
   it 'can setup with logger' do
@@ -69,6 +69,80 @@ RSpec.describe 'Legion::Data::Connection' do
   describe 'preconnect default' do
     it 'defaults to false to avoid background thread noise on failed network connects' do
       expect(Legion::Data::Settings.default[:preconnect]).to eq(false)
+    end
+  end
+
+  describe 'unresolved URI placeholder detection' do
+    before do
+      Legion::Settings[:data][:adapter] = 'postgres'
+    end
+
+    after do
+      Legion::Data::Connection.shutdown
+      Legion::Settings[:data][:adapter] = 'sqlite'
+      Legion::Settings[:data][:dev_mode] = true
+      Legion::Settings[:data][:dev_fallback] = false
+      Legion::Settings[:data][:creds] = { database: 'legion_test.db' }
+    end
+
+    it 'raises UnresolvedCredentialError when username contains a lease:// URI' do
+      Legion::Settings[:data][:creds] = {
+        user:     'lease://postgresql#username',
+        password: 'resolved_password',
+        host:     '127.0.0.1',
+        port:     5432,
+        database: 'legionio'
+      }
+
+      expect { Legion::Data::Connection.setup }.to raise_error(
+        Legion::Data::Connection::UnresolvedCredentialError,
+        %r{settings\[:data\]\[:creds\]\[:user\].*unresolved URI placeholder.*lease://postgresql#username}
+      )
+    end
+
+    it 'raises UnresolvedCredentialError when password contains a vault:// URI' do
+      Legion::Settings[:data][:creds] = {
+        user:     'legion',
+        password: 'vault://secret/db#password',
+        host:     '127.0.0.1',
+        port:     5432,
+        database: 'legionio'
+      }
+
+      expect { Legion::Data::Connection.setup }.to raise_error(
+        Legion::Data::Connection::UnresolvedCredentialError,
+        %r{settings\[:data\]\[:creds\]\[:password\].*unresolved URI placeholder.*vault://secret/db#password}
+      )
+    end
+
+    it 'raises UnresolvedCredentialError when password contains an env:// URI' do
+      Legion::Settings[:data][:creds] = {
+        user:     'legion',
+        password: 'env://DB_PASSWORD',
+        host:     '127.0.0.1',
+        port:     5432,
+        database: 'legionio'
+      }
+
+      expect { Legion::Data::Connection.setup }.to raise_error(
+        Legion::Data::Connection::UnresolvedCredentialError,
+        %r{settings\[:data\]\[:creds\]\[:password\].*unresolved URI placeholder.*env://DB_PASSWORD}
+      )
+    end
+
+    it 'does not raise when credentials are resolved strings' do
+      Legion::Settings[:data][:creds] = {
+        user:     'legion',
+        password: 'actual_password',
+        host:     '127.0.0.1',
+        port:     5432,
+        database: 'legionio'
+      }
+
+      opts = Legion::Data::Connection.send(:sequel_opts)
+      expect do
+        Legion::Data::Connection.send(:connection_opts_for, adapter: :postgres, opts: opts)
+      end.not_to raise_error
     end
   end
 

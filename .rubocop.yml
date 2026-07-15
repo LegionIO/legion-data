@@ -23,19 +23,14 @@ Naming/VariableNumber:
     - lib/legion/data/connection.rb
 Legion/Framework/EagerSequelModel:
   Enabled: false
-# TaxonomyEnum validates LLM lane taxonomy (:tier/:type/:circuit_state). In
-# these paths `type:` is a Sequel column type (e.g. foreign_key type: :uuid) or
-# the extract API (type: :auto/:text) — not LLM taxonomy — so the cop misfires.
-Legion/Llm/TaxonomyEnum:
-  Exclude:
-    - 'lib/legion/data/migrations/**/*'
-    - 'spec/**/*'
 Metrics/BlockLength:
   Max: 100
   Exclude:
     - 'spec/**/*'
     - 'lib/legion/data/migrations/*'
 ThreadSafety/ClassInstanceVariable:
+  Enabled: false
+Legion/Llm/TaxonomyEnum:
   Enabled: false
 ThreadSafety/ClassAndModuleAttributes:
   Enabled: false

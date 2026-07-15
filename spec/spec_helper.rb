@@ -19,6 +19,7 @@ Legion::Logging.setup(log_file: './legion.log', level: 'fatal')
 Legion::Settings.load
 require 'legion/data'
 
+Legion::Settings[:data][:adapter] = 'sqlite'
 Legion::Settings[:data][:dev_mode] = true
 Legion::Settings[:data][:creds] ||= {}
 Legion::Settings[:data][:creds][:database] = 'legion_test.db'

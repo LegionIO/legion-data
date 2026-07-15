@@ -10,6 +10,10 @@ module Legion
     module Connection
       ADAPTERS = %i[sqlite mysql2 postgres].freeze
 
+      UNRESOLVED_URI_PATTERN = %r{\A(?:vault|env|lease)://}
+
+      class UnresolvedCredentialError < StandardError; end
+
       GENERIC_KEYS = %i[max_connections pool_timeout preconnect single_threaded test name].freeze
 
       ADAPTER_KEYS = {
@@ -171,6 +175,9 @@ module Legion
                       attempted_adapter = adapter
                       begin
                         ::Sequel.connect(connection_opts_for(adapter: attempted_adapter, opts: opts))
+                      rescue UnresolvedCredentialError => e
+                        handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
+                        raise
                       rescue StandardError => e
                         raise unless dev_fallback?
 
@@ -410,8 +417,21 @@ module Legion
 
         def connection_opts_for(adapter:, opts:)
           connection_opts = opts.merge(adapter: adapter, **creds_builder)
+          validate_no_unresolved_uris!(connection_opts)
           connection_opts[:preconnect] = false if adapter != :sqlite && dev_fallback?
           connection_opts
+        end
+
+        def validate_no_unresolved_uris!(connection_opts)
+          %i[user username password].each do |key|
+            value = connection_opts[key]
+            next unless value.is_a?(String) && value.match?(UNRESOLVED_URI_PATTERN)
+
+            raise UnresolvedCredentialError,
+                  "Legion::Data cannot connect: settings[:data][:creds][:#{key}] is still " \
+                  "an unresolved URI placeholder (#{value}). The settings resolver failed to " \
+                  'resolve this lease — check that Legion::Crypt and Vault are available at boot.'
+          end
         end
 
         def sequel_opts

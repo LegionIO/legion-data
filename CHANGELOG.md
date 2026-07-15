@@ -1,5 +1,9 @@
 # Legion::Data Changelog
 
+## [1.10.7] - 2026-07-15
+### Fixed
+- Fail loud with actionable error when unresolved lease:// credentials reach connection
+
 ## [1.10.6] - 2026-07-03
 
 ### Changed
