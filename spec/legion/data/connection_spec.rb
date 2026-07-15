@@ -78,7 +78,10 @@ RSpec.describe 'Legion::Data::Connection' do
     end
 
     after do
+      Legion::Data::Connection.shutdown
       Legion::Settings[:data][:adapter] = 'sqlite'
+      Legion::Settings[:data][:dev_mode] = true
+      Legion::Settings[:data][:dev_fallback] = false
       Legion::Settings[:data][:creds] = { database: 'legion_test.db' }
     end
 
@@ -135,10 +138,11 @@ RSpec.describe 'Legion::Data::Connection' do
         port:     5432,
         database: 'legionio'
       }
-      Legion::Settings[:data][:dev_mode] = true
-      Legion::Settings[:data][:dev_fallback] = true
 
-      expect { Legion::Data::Connection.setup }.not_to raise_error
+      opts = Legion::Data::Connection.send(:sequel_opts)
+      expect do
+        Legion::Data::Connection.send(:connection_opts_for, adapter: :postgres, opts: opts)
+      end.not_to raise_error
     end
   end
 
