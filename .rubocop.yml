@@ -30,6 +30,8 @@ Metrics/BlockLength:
     - 'lib/legion/data/migrations/*'
 ThreadSafety/ClassInstanceVariable:
   Enabled: false
+Legion/Llm/TaxonomyEnum:
+  Enabled: false
 ThreadSafety/ClassAndModuleAttributes:
   Enabled: false
 Metrics/AbcSize:
