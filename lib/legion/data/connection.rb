@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/data/auth_failure_handler'
 
 require 'fileutils'
 require 'sequel'
@@ -299,6 +300,7 @@ module Legion
           @sequel.opts[:password] = new_pass
 
           @sequel.disconnect
+          expire_all_pooled_connections
 
           @sequel.test_connection
           log.info("reconnect_with_fresh_creds: rotated credentials (#{old_user} → #{new_user})")
@@ -307,6 +309,16 @@ module Legion
           handle_exception(e, level: :error, handled: true, operation: :reconnect_with_fresh_creds,
                            old_user: old_user, new_user: new_user)
           false
+        end
+
+        def expire_all_pooled_connections
+          pool = @sequel.pool
+          return unless pool.instance_variable_defined?(:@connection_expiration_timestamps)
+
+          timestamps = pool.instance_variable_get(:@connection_expiration_timestamps)
+          timestamps.each_key { |conn| timestamps[conn] = [0, 0].freeze }
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :expire_all_pooled_connections)
         end
 
         def connect_with_replicas
@@ -397,8 +409,20 @@ module Legion
             conn_host = actual[:host] || '127.0.0.1'
             conn_port = actual[:port]
             conn_db   = actual[:database] || actual[:db]
-            log.info "Connected to #{adapter}://#{conn_user}@#{conn_host}:#{conn_port}/#{conn_db}"
+            lease_id  = current_lease_id
+            msg = "Connected to #{adapter}://#{conn_user}@#{conn_host}:#{conn_port}/#{conn_db}"
+            msg += " lease_id=#{lease_id}" if lease_id
+            log.info msg
           end
+        end
+
+        def current_lease_id
+          return unless defined?(Legion::Crypt::LeaseManager)
+
+          Legion::Crypt::LeaseManager.instance.active_leases.dig(:postgresql, :lease_id)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :current_lease_id)
+          nil
         end
 
         def dev_fallback?
@@ -608,8 +632,16 @@ module Legion
             @sequel.extension(:connection_expiration)
             @sequel.pool.connection_expiration_timeout = data[:connection_expiration_timeout]
           end
+
+          install_auth_failure_hook
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
+        end
+
+        def install_auth_failure_hook
+          Legion::Data::AuthFailureHandler.install(@sequel)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :install_auth_failure_hook)
         end
 
         def build_data_logger
