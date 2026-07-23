@@ -11,7 +11,9 @@ module Legion
         /role .* does not exist/i,
         /password authentication failed/i,
         /authentication failed/i,
-        /no pg_hba\.conf entry/i
+        /no pg_hba\.conf entry/i,
+        /permission denied for table/i,
+        /permission denied for relation/i
       ].freeze
 
       REISSUE_COOLDOWN = 30
@@ -19,18 +21,23 @@ module Legion
       @last_reissue_at = nil
       @mutex = Mutex.new
 
-      module ConnectHook
+      module SequelHook
         def connect(server)
           super
         rescue StandardError => e
           Legion::Data::AuthFailureHandler.handle(e)
           raise
         end
+
+        def log_exception(exception, message)
+          super
+          Legion::Data::AuthFailureHandler.handle(exception)
+        end
       end
 
       class << self
         def install(sequel_db)
-          sequel_db.singleton_class.prepend(ConnectHook)
+          sequel_db.singleton_class.prepend(SequelHook)
         end
 
         def handle(error)

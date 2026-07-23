@@ -26,9 +26,9 @@ RSpec.describe Legion::Data::AuthFailureHandler do
       expect(described_class.auth_failure?(error)).to be false
     end
 
-    it 'does not match permission denied (not an auth failure)' do
+    it 'matches permission denied for table (revoked credentials)' do
       error = StandardError.new('ERROR: permission denied for table schedules')
-      expect(described_class.auth_failure?(error)).to be false
+      expect(described_class.auth_failure?(error)).to be true
     end
   end
 
@@ -66,10 +66,10 @@ RSpec.describe Legion::Data::AuthFailureHandler do
   end
 
   describe '.install' do
-    it 'prepends ConnectHook on the sequel database singleton class' do
+    it 'prepends SequelHook on the sequel database singleton class' do
       mock_db = Sequel.sqlite
       described_class.install(mock_db)
-      expect(mock_db.singleton_class.ancestors).to include(described_class::ConnectHook)
+      expect(mock_db.singleton_class.ancestors).to include(described_class::SequelHook)
       mock_db.disconnect
     end
   end
