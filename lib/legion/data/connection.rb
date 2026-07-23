@@ -420,7 +420,8 @@ module Legion
           return unless defined?(Legion::Crypt::LeaseManager)
 
           Legion::Crypt::LeaseManager.instance.active_leases.dig(:postgresql, :lease_id)
-        rescue StandardError
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :current_lease_id)
           nil
         end
 
