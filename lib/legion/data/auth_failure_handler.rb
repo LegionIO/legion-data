@@ -29,7 +29,7 @@ module Legion
           raise
         end
 
-        def raise_error(exception, opts = OPTS)
+        def raise_error(exception, opts = Sequel::OPTS)
           Legion::Data::AuthFailureHandler.handle(exception)
           super
         end
