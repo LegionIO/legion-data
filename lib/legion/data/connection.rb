@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/data/auth_failure_handler'
 
 require 'fileutils'
 require 'sequel'
@@ -309,6 +310,7 @@ module Legion
           false
         end
 
+
         def connect_with_replicas
           return unless adapter == :postgres
 
@@ -608,8 +610,16 @@ module Legion
             @sequel.extension(:connection_expiration)
             @sequel.pool.connection_expiration_timeout = data[:connection_expiration_timeout]
           end
+
+          install_auth_failure_hook
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
+        end
+
+        def install_auth_failure_hook
+          Legion::Data::AuthFailureHandler.install(@sequel)
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :install_auth_failure_hook)
         end
 
         def build_data_logger

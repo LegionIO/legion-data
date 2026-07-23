@@ -1,5 +1,9 @@
 # Legion::Data Changelog
 
+## [1.10.8] - 2026-07-23
+### Fixed
+- Detect auth failures (`role does not exist`, `password authentication failed`) on Sequel pool connections and trigger immediate Vault lease reissue via LeaseManager instead of retrying dead credentials forever. 30-second cooldown prevents reissue storms during bulk credential rotation.
+
 ## [1.10.7] - 2026-07-15
 ### Fixed
 - Fail loud with actionable error when unresolved lease:// credentials reach connection
