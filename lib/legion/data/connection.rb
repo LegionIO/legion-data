@@ -399,8 +399,19 @@ module Legion
             conn_host = actual[:host] || '127.0.0.1'
             conn_port = actual[:port]
             conn_db   = actual[:database] || actual[:db]
-            log.info "Connected to #{adapter}://#{conn_user}@#{conn_host}:#{conn_port}/#{conn_db}"
+            lease_id  = current_lease_id
+            msg = "Connected to #{adapter}://#{conn_user}@#{conn_host}:#{conn_port}/#{conn_db}"
+            msg += " lease_id=#{lease_id}" if lease_id
+            log.info msg
           end
+        end
+
+        def current_lease_id
+          return unless defined?(Legion::Crypt::LeaseManager)
+
+          Legion::Crypt::LeaseManager.instance.active_leases.dig(:postgresql, :lease_id)
+        rescue StandardError
+          nil
         end
 
         def dev_fallback?
