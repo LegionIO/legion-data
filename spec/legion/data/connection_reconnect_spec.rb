@@ -35,8 +35,9 @@ RSpec.describe 'Legion::Data::Connection.reconnect_with_fresh_creds' do
   end
 
   context 'with a postgres adapter (mocked)' do
+    let(:mock_pool) { double('pool') }
     let(:mock_sequel) do
-      instance_double(Sequel::Database, opts: { user: 'old-vault-user', password: 'old-pass' })
+      instance_double(Sequel::Database, opts: { user: 'old-vault-user', password: 'old-pass' }, pool: mock_pool)
     end
 
     before do

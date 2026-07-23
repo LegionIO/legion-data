@@ -300,6 +300,7 @@ module Legion
           @sequel.opts[:password] = new_pass
 
           @sequel.disconnect
+          expire_all_pooled_connections
 
           @sequel.test_connection
           log.info("reconnect_with_fresh_creds: rotated credentials (#{old_user} → #{new_user})")
@@ -310,6 +311,15 @@ module Legion
           false
         end
 
+        def expire_all_pooled_connections
+          pool = @sequel.pool
+          return unless pool.instance_variable_defined?(:@connection_expiration_timestamps)
+
+          timestamps = pool.instance_variable_get(:@connection_expiration_timestamps)
+          timestamps.each_key { |conn| timestamps[conn] = [0, 0].freeze }
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :expire_all_pooled_connections)
+        end
 
         def connect_with_replicas
           return unless adapter == :postgres
