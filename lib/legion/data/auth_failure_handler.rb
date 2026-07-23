@@ -29,9 +29,9 @@ module Legion
           raise
         end
 
-        def log_exception(exception, message)
-          super
+        def raise_error(exception, opts = OPTS)
           Legion::Data::AuthFailureHandler.handle(exception)
+          super
         end
       end
 
