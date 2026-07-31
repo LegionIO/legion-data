@@ -19,14 +19,18 @@ module Legion
 
       ADAPTER_KEYS = {
         sqlite:   %i[timeout readonly disable_dqs],
-        postgres: %i[connect_timeout sslmode sslrootcert search_path],
+        postgres: %i[connect_timeout sslmode sslrootcert search_path
+                     keepalives keepalives_idle keepalives_interval keepalives_count
+                     tcp_user_timeout],
         mysql2:   %i[connect_timeout read_timeout write_timeout encoding sql_mode]
       }.freeze
 
       ADAPTER_DEFAULTS = {
         sqlite:   { timeout: 5000, readonly: false, disable_dqs: true },
-        postgres: { connect_timeout: 20, sslmode: 'disable' },
-        mysql2:   { connect_timeout: 120, encoding: 'utf8mb4' }
+        postgres: { connect_timeout: 5, sslmode: 'disable',
+                    keepalives: 1, keepalives_idle: 10, keepalives_interval: 5,
+                    keepalives_count: 3, tcp_user_timeout: 15_000 },
+        mysql2:   { connect_timeout: 5, read_timeout: 5, write_timeout: 5, encoding: 'utf8mb4' }
       }.freeze
 
       QUERY_LOG_DIR = File.expand_path('~/.legionio/logs').freeze
@@ -272,7 +276,10 @@ module Legion
         end
 
         def shutdown
-          @sequel&.disconnect
+          if @sequel
+            timeout = Legion::Settings[:data][:shutdown_timeout] || 5
+            force_disconnect_pool(timeout: timeout)
+          end
           @query_file_logger&.close
           @query_file_logger = nil
           @fallback_active = false
@@ -430,6 +437,28 @@ module Legion
           data_settings[:dev_mode] == true && data_settings[:dev_fallback] != false
         end
 
+        def force_disconnect_pool(timeout:)
+          pool = @sequel.pool
+          in_use = pool.size - (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
+
+          if in_use.positive?
+            log.warn("Legion::Data shutdown: #{in_use} connection(s) still checked out, waiting up to #{timeout}s")
+            deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + timeout
+            while ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) < deadline
+              break if pool.size <= (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
+
+              sleep 0.1
+            end
+            remaining = pool.size - (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
+            log.warn("Legion::Data shutdown: force-disconnecting #{remaining} wedged connection(s)") if remaining.positive?
+          end
+
+          @sequel.disconnect
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :force_disconnect_pool)
+          @sequel&.disconnect rescue nil # rubocop:disable Style/RescueModifier
+        end
+
         def sqlite_path
           path = Legion::Settings[:data][:creds][:database] || 'legionio.db'
           return path if File.absolute_path?(path)
@@ -512,6 +541,11 @@ module Legion
           tuning[:connection_validation_timeout]  = data[:connection_validation_timeout]
           tuning[:connection_expiration]          = data[:connection_expiration]
           tuning[:connection_expiration_timeout]  = data[:connection_expiration_timeout]
+
+          # Session timeouts (postgres)
+          tuning[:statement_timeout]   = data[:statement_timeout]
+          tuning[:lock_timeout]        = data[:lock_timeout]
+          tuning[:shutdown_timeout]    = data[:shutdown_timeout]
 
           # Adapter-specific (only keys relevant to current adapter)
           defaults = ADAPTER_DEFAULTS.fetch(adapter, {})
@@ -621,6 +655,7 @@ module Legion
           if adapter == :postgres
             Sequel.extension(:pg_array)
             @sequel.extension(:pg_array)
+            install_postgres_session_timeouts
           end
 
           if data[:connection_validation] != false
@@ -636,6 +671,21 @@ module Legion
           install_auth_failure_hook
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
+        end
+
+        def install_postgres_session_timeouts
+          data = Legion::Settings[:data]
+          stmt_timeout = data[:statement_timeout]
+          lck_timeout = data[:lock_timeout]
+
+          @sequel.pool.after_connect = proc do |conn|
+            conn.exec("SET statement_timeout = '#{stmt_timeout.to_i}ms'") if stmt_timeout
+            conn.exec("SET lock_timeout = '#{lck_timeout.to_i}ms'") if lck_timeout
+          end
+
+          log.info("Postgres session timeouts: statement_timeout=#{stmt_timeout}ms, lock_timeout=#{lck_timeout}ms")
+        rescue StandardError => e
+          handle_exception(e, level: :warn, handled: true, operation: :install_postgres_session_timeouts)
         end
 
         def install_auth_failure_hook
