@@ -277,7 +277,7 @@ module Legion
 
         def shutdown
           if @sequel
-            timeout = Legion::Settings[:data][:shutdown_timeout] || 5
+            timeout = Legion::Settings[:data][:shutdown_timeout]
             force_disconnect_pool(timeout: timeout)
           end
           @query_file_logger&.close
