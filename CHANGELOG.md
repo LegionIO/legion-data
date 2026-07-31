@@ -1,5 +1,13 @@
 # Legion::Data Changelog
 
+## [1.10.9] - 2026-07-31
+### Fixed
+- **Postgres session timeouts**: Apply `statement_timeout` (default 5000ms) and `lock_timeout` (default 2000ms) via `after_connect` hook on every new Postgres connection. Prevents unbounded `SELECT` or lock-wait from hanging the process indefinitely — the root cause of ~1h50m connection wedges.
+- **TCP keepalives on Postgres**: Wire libpq `keepalives`, `keepalives_idle` (10s), `keepalives_interval` (5s), `keepalives_count` (3), and `tcp_user_timeout` (15000ms) through the Sequel connection hash. Detects half-open TCP sockets within ~25s instead of relying on OS defaults (often 2+ hours).
+- **Force-disconnect on shutdown**: `shutdown` now waits up to `shutdown_timeout` (default 5s) for checked-out connections to return, then force-disconnects all remaining connections. Previously, `disconnect` only closed idle pool connections — a connection stuck in `select()` survived forever, hanging process exit.
+- **Adapter timeout defaults tightened**: Postgres `connect_timeout` reduced from 20s to 5s; MySQL `connect_timeout` reduced from 120s to 5s, `read_timeout` and `write_timeout` default to 5s. The old 20s/120s values allowed connection attempts to block worker threads far too long under network partition.
+- **MySQL read/write timeout wiring preserved**: `read_timeout` and `write_timeout` remain in `ADAPTER_KEYS[:mysql2]` where Sequel's mysql2 adapter honors them. For Postgres, the equivalent is `statement_timeout` (query bound) plus TCP keepalives (socket bound) — `read_timeout` is not a libpq/Sequel-postgres concept, so it is correctly absent from the Postgres key list.
+
 ## [1.10.8] - 2026-07-23
 ### Fixed
 - Detect auth failures (`role does not exist`, `password authentication failed`) on Sequel pool connections and trigger immediate Vault lease reissue via LeaseManager instead of retrying dead credentials forever. 30-second cooldown prevents reissue storms during bulk credential rotation.

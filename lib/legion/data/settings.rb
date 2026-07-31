@@ -58,6 +58,28 @@ module Legion
           connection_expiration:         true,
           connection_expiration_timeout: 14_400,
 
+          # Postgres session timeouts (milliseconds, applied via SET on each new connection).
+          # statement_timeout bounds any single query; lock_timeout bounds lock acquisition.
+          # These prevent a wedged SELECT or lock wait from hanging the process indefinitely.
+          statement_timeout:             5000,
+          lock_timeout:                  2000,
+
+          # TCP keepalives for Postgres (libpq connection params).
+          # Detect half-open sockets where the peer vanished without FIN/RST.
+          # keepalives_idle: seconds before first keepalive probe after idle
+          # keepalives_interval: seconds between probes
+          # keepalives_count: failed probes before declaring connection dead
+          # tcp_user_timeout: total ms for unacked data before kernel drops connection (Linux)
+          keepalives:                    1,
+          keepalives_idle:               10,
+          keepalives_interval:           5,
+          keepalives_count:              3,
+          tcp_user_timeout:              15_000,
+
+          # Shutdown: max seconds to wait for checked-out connections to return before
+          # force-disconnecting them.
+          shutdown_timeout:              5,
+
           # Adapter-specific (nil = use adapter built-in default)
           connect_timeout:               nil,
           read_timeout:                  nil,
