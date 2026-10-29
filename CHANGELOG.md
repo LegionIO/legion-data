@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.11] - 2026-10-29
+
+### Fixed
+- Apply PostgreSQL statement and lock timeouts before any connection is opened, including initial, preconnected, and replacement sessions (#68).
+
 ## [1.10.10] - 2026-10-29
 
 ### Fixed

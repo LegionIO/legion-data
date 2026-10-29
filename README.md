@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.10 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.11 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -301,6 +301,8 @@ SQLite lock waits use a Ruby busy handler that releases the GVL between retries,
   }
 }
 ```
+
+`data.statement_timeout` (default 5,000 ms) and `data.lock_timeout` (default 2,000 ms) are applied before every PostgreSQL connection enters the pool, including startup and replacement connections. Set a value to `null` to leave that server setting unchanged, or `0` to explicitly disable the corresponding PostgreSQL timeout.
 
 PostgreSQL with `pgvector` is required for Apollo models:
 

@@ -533,8 +533,15 @@ module Legion
             opts[key] = val unless val.nil?
           end
           opts[:after_connect] = proc { |connection| configure_sqlite_busy_handler(connection: connection, timeout: opts[:timeout]) } if adapter == :sqlite
+          opts[:connect_sqls] = postgres_connect_sqls(data) if adapter == :postgres
 
           opts
+        end
+
+        def postgres_connect_sqls(data)
+          %i[statement_timeout lock_timeout].filter_map do |setting|
+            "SET #{setting} = '#{data[setting].to_i}ms'" if data[setting]
+          end
         end
 
         def tuning_stats(data)
@@ -670,7 +677,6 @@ module Legion
           if adapter == :postgres
             Sequel.extension(:pg_array)
             @sequel.extension(:pg_array)
-            install_postgres_session_timeouts
           end
 
           if data[:connection_validation] != false
@@ -686,21 +692,6 @@ module Legion
           install_auth_failure_hook
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
-        end
-
-        def install_postgres_session_timeouts
-          data = Legion::Settings[:data]
-          stmt_timeout = data[:statement_timeout]
-          lck_timeout = data[:lock_timeout]
-
-          @sequel.pool.after_connect = proc do |conn|
-            conn.exec("SET statement_timeout = '#{stmt_timeout.to_i}ms'") if stmt_timeout
-            conn.exec("SET lock_timeout = '#{lck_timeout.to_i}ms'") if lck_timeout
-          end
-
-          log.info("Postgres session timeouts: statement_timeout=#{stmt_timeout}ms, lock_timeout=#{lck_timeout}ms")
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :install_postgres_session_timeouts)
         end
 
         def install_auth_failure_hook
