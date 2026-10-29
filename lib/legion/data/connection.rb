@@ -5,6 +5,7 @@ require 'legion/data/auth_failure_handler'
 
 require 'fileutils'
 require 'sequel'
+require 'uri'
 
 module Legion
   module Data
@@ -174,6 +175,7 @@ module Legion
           opts = sequel_opts
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
           @fallback_active = false
+          @replica_servers = []
           @sequel = if adapter == :sqlite
                       ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
                     else
@@ -196,10 +198,10 @@ module Legion
                         ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
                       end
                     end
+          @replica_servers = @sequel.opts.fetch(:servers, {}).keys
           Legion::Settings[:data][:connected] = true
           log_connection_info
           configure_extensions
-          connect_with_replicas
         end
 
         # Returns connection metadata for health checks and diagnostics.
@@ -283,6 +285,7 @@ module Legion
           @query_file_logger&.close
           @query_file_logger = nil
           @fallback_active = false
+          @replica_servers = []
           Legion::Settings[:data][:connected] = false
           log.info 'Legion::Data connection closed'
         end
@@ -326,28 +329,6 @@ module Legion
           timestamps.each_key { |conn| timestamps[conn] = [0, 0].freeze }
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :expire_all_pooled_connections)
-        end
-
-        def connect_with_replicas
-          return unless adapter == :postgres
-
-          replica_url  = Legion::Settings[:data][:read_replica_url]
-          replica_list = Array(Legion::Settings[:data][:replicas]).dup
-
-          replica_list.prepend(replica_url) if replica_url && !replica_url.empty?
-          replica_list.uniq!
-          replica_list.compact!
-
-          return if replica_list.empty?
-
-          @sequel.extension(:server_block)
-
-          replica_list.each_with_index do |url, idx|
-            @sequel.add_servers("read_#{idx}": url)
-          end
-
-          @replica_servers = replica_list.each_with_index.map { |_, idx| :"read_#{idx}" }
-          log.debug "Registered #{@replica_servers.size} read replica(s)"
         end
 
         def read_server
@@ -486,7 +467,23 @@ module Legion
           connection_opts = opts.merge(adapter: adapter, **creds_builder)
           validate_no_unresolved_uris!(connection_opts)
           connection_opts[:preconnect] = false if adapter != :sqlite && dev_fallback?
+          if adapter == :postgres
+            servers = postgres_replica_servers
+            connection_opts[:servers] = servers unless servers.empty?
+          end
           connection_opts
+        end
+
+        def postgres_replica_servers
+          data = Legion::Settings[:data]
+          urls = [data[:read_replica_url], *Array(data[:replicas])].compact.reject(&:empty?).uniq
+          urls.each_with_index.to_h do |url, index|
+            uri = URI.parse(url)
+            raise ArgumentError, 'Read replicas require PostgreSQL URLs' unless %w[postgres postgresql].include?(uri.scheme)
+
+            options = ::Sequel::Database.send(:options_from_uri, uri).compact
+            [:"read_#{index}", options]
+          end
         end
 
         def validate_no_unresolved_uris!(connection_opts)
@@ -677,6 +674,7 @@ module Legion
           if adapter == :postgres
             Sequel.extension(:pg_array)
             @sequel.extension(:pg_array)
+            @sequel.extension(:server_block) unless @replica_servers.empty?
           end
 
           if data[:connection_validation] != false

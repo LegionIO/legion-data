@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.13] - 2026-10-29
+
+### Fixed
+- Build PostgreSQL replica pools before connecting, decode replica URLs into valid Sequel server options, and preserve inherited credentials and session timeouts. Clear replica routing on shutdown and reconfiguration (#70).
+
 ## [1.10.12] - 2026-10-29
 
 ### Fixed

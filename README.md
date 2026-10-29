@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.12 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.13 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -406,6 +406,8 @@ Legion::Data.reload_static_cache
   }
 }
 ```
+
+Replica URLs initialize a sharded pool at startup. URL-specific options override primary connection options; omitted credentials and session timeouts are inherited. Duplicate URLs are registered once as `read_0`, `read_1`, and so on. Reads remain on the primary unless explicitly routed, for example `dataset.server(Legion::Data::Connection.read_server)`. With no replicas configured, `read_server` returns `:default`.
 
 ---
 
