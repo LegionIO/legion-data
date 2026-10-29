@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.15] - 2026-10-29
+
+### Fixed
+- Isolate query-log write and close I/O failures from database operations. Full disks no longer turn committed writes into apparent failures or replace the original SQL exception; logging failures remain reported through Legion::Logging (#72).
+
 ## [1.10.14] - 2026-10-29
 
 ### Fixed

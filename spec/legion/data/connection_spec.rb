@@ -136,23 +136,63 @@ RSpec.describe 'Legion::Data::Connection' do
   describe Legion::Data::Connection::QueryFileLogger do
     around do |example|
       Dir.mktmpdir('legion-data-query-log') do |dir|
-        @query_log_path = File.join(dir, 'query.log')
+        logger = described_class.new(File.join(dir, 'query.log'))
+        database = Sequel.sqlite
+        database.create_table(:query_log_probe) do
+          primary_key :id
+          String :value, unique: true
+        end
+        database.loggers << logger
+        @query_logger = logger
+        @query_database = database
         example.run
+      ensure
+        logger&.close
+        database&.disconnect
       end
     end
 
-    it 'ignores debug writes after close without warning' do
-      logger = described_class.new(@query_log_path)
-      logger.close
+    it 'preserves a successful commit when the query log disk is full' do
+      allow(@query_logger.instance_variable_get(:@file)).to receive(:puts).and_raise(Errno::ENOSPC)
+      allow(@query_logger).to receive(:handle_exception)
 
-      expect(logger).not_to receive(:handle_exception)
-      expect { logger.debug('SELECT 1') }.not_to raise_error
+      id = @query_database[:query_log_probe].insert(value: 'committed')
+      expect(@query_database[:query_log_probe][id: id][:value]).to eq('committed')
+      expect(@query_logger).to have_received(:handle_exception).with(
+        an_instance_of(Errno::ENOSPC), hash_including(operation: :query_file_write, handled: true)
+      ).at_least(:once)
     end
 
-    it 'allows repeated close calls' do
-      logger = described_class.new(@query_log_path)
+    it 'preserves the original database error when query logging also fails' do
+      @query_database[:query_log_probe].insert(value: 'duplicate')
+      allow(@query_logger.instance_variable_get(:@file)).to receive(:puts).and_raise(Errno::EIO)
+      allow(@query_logger).to receive(:handle_exception)
 
-      expect { 2.times { logger.close } }.not_to raise_error
+      expect { @query_database[:query_log_probe].insert(value: 'duplicate') }.to raise_error(Sequel::UniqueConstraintViolation)
+      expect(@query_database[:query_log_probe].count).to eq(1)
+    end
+
+    it 'permits database operations after repeated logger shutdown without warnings' do
+      2.times { @query_logger.close }
+      expect(@query_logger).not_to receive(:handle_exception)
+      id = @query_database[:query_log_probe].insert(value: 'after close')
+      expect(@query_database[:query_log_probe][id: id][:value]).to eq('after close')
+    end
+
+    it 'reports close errors without breaking database operations or later shutdown' do
+      file = @query_logger.instance_variable_get(:@file)
+      allow(file).to receive(:close).and_wrap_original do |close|
+        close.call
+        raise IOError, 'flush failed'
+      end
+      allow(@query_logger).to receive(:handle_exception)
+
+      @query_logger.close
+      id = @query_database[:query_log_probe].insert(value: 'after failed flush')
+      expect(@query_database[:query_log_probe][id: id][:value]).to eq('after failed flush')
+      expect(@query_logger).to have_received(:handle_exception).with(
+        an_instance_of(IOError), hash_including(operation: :query_file_close, handled: true)
+      )
     end
   end
 end

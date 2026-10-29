@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.14 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.15 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -397,6 +397,10 @@ Two independent caching tiers, both disabled by default:
 # After hot-loading extensions, refresh the static cache:
 Legion::Data.reload_static_cache
 ```
+
+### Query File Logging
+
+Enable `data.query_log` (or `data.local.query_log`) to write SQL to a dedicated file. Write and close I/O failures, including a full disk, are reported through Legion::Logging without changing the database operation's result or replacing its exception. Opening the configured log file must still succeed during setup.
 
 ### Read Replicas (PostgreSQL)
 

@@ -143,6 +143,9 @@ module Legion
             @closed = true
             @file.close unless @file.closed?
           end
+        rescue IOError, SystemCallError => e
+          handle_exception(e, level: :warn, handled: true, operation: :query_file_close, path: @path)
+          nil
         end
 
         private
@@ -153,9 +156,7 @@ module Legion
 
             @file.puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S.%L')}] #{level} #{message}"
           end
-        rescue IOError => e
-          return nil if @closed || @file.closed?
-
+        rescue IOError, SystemCallError => e
           handle_exception(e, level: :warn, handled: true, operation: :query_file_write, path: @path)
           nil
         end
