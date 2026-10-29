@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.11 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.12 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -238,6 +238,8 @@ Legion::Data::Rls.with_tenant(tenant_id) do
   Legion::Data::Model::Task.all  # scoped to tenant_id via RLS policy
 end
 ```
+
+The scope holds one pooled connection until the block finishes and its prior tenant state has been restored, including when the block raises. Nested scopes restore the outer tenant. Run scoped database work in the calling thread; newly spawned threads do not inherit its tenant scope.
 
 ### Permission Checks
 

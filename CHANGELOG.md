@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.12] - 2026-10-29
+
+### Fixed
+- Keep PostgreSQL tenant setup, scoped queries, and restoration on one checked-out connection. Preserve nested tenant scopes and clean up after exceptions without leaking tenant state to another borrower (#69).
+
 ## [1.10.11] - 2026-10-29
 
 ### Fixed
