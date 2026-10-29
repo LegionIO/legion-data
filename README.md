@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.15 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.16 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -414,6 +414,10 @@ Enable `data.query_log` (or `data.local.query_log`) to write SQL to a dedicated 
 ```
 
 Replica URLs initialize a sharded pool at startup. URL-specific options override primary connection options; omitted credentials and session timeouts are inherited. Duplicate URLs are registered once as `read_0`, `read_1`, and so on. Reads remain on the primary unless explicitly routed, for example `dataset.server(Legion::Data::Connection.read_server)`. With no replicas configured, `read_server` returns `:default`.
+
+### Archive Objects
+
+Each archive batch receives a UUID before upload. S3, Azure, and local object paths use `legion-archive/<table>/<year>/<month>/batch_<uuid>.jsonl.gz`; the same UUID is stored in `archive_manifest.batch_id`. Repeated runs do not reuse numbered object names. Existing manifest paths remain valid; no stored objects are renamed. Direct `Archiver.upload_batch` callers must supply `batch_id:` instead of `batch_n:`.
 
 ---
 

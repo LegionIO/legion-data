@@ -5,6 +5,7 @@ require 'digest'
 require 'fileutils'
 require 'json'
 require 'securerandom'
+require 'stringio'
 require 'tmpdir'
 require 'zlib'
 
@@ -47,15 +48,15 @@ module Legion
           raise
         end
 
-        def upload_batch(data:, table:, year:, month:, batch_n:, backend:)
-          log.info "Archiver storing batch table=#{table} backend=#{backend || :tmpdir} year=#{year} month=#{month} batch=#{batch_n}"
+        def upload_batch(data:, table:, year:, month:, batch_id:, backend:)
+          log.info "Archiver storing batch table=#{table} backend=#{backend || :tmpdir} year=#{year} month=#{month} batch=#{batch_id}"
           case backend
           when :s3
-            upload_s3(data: data, table: table, year: year, month: month, batch_n: batch_n)
+            upload_s3(data: data, table: table, year: year, month: month, batch_id: batch_id)
           when :azure
-            upload_azure(data: data, table: table, year: year, month: month, batch_n: batch_n)
+            upload_azure(data: data, table: table, year: year, month: month, batch_id: batch_id)
           else
-            upload_tmpdir(data: data, table: table, year: year, month: month, batch_n: batch_n)
+            upload_tmpdir(data: data, table: table, year: year, month: month, batch_id: batch_id)
           end
         end
 
@@ -102,7 +103,6 @@ module Legion
             table:           table,
             cutoff:          cutoff,
             batch_size:      batch_size,
-            batch_n:         batches + 1,
             now:             now,
             storage_backend: storage_backend
           ))
@@ -114,18 +114,19 @@ module Legion
           { batches: batches, total_rows: total_rows, paths: paths }
         end
 
-        def archive_batch(conn:, table:, cutoff:, batch_size:, batch_n:, now:, storage_backend:)
+        def archive_batch(conn:, table:, cutoff:, batch_size:, now:, storage_backend:)
           rows = conn[table].where { created_at < cutoff }.limit(batch_size).all
           return if rows.empty?
 
+          batch_id = SecureRandom.uuid
           compressed = gzip_compress(serialize_rows(rows))
           path = upload_batch(
-            data:    compressed,
-            table:   table.to_s,
-            year:    now.year,
-            month:   now.month,
-            batch_n: batch_n,
-            backend: storage_backend
+            data:     compressed,
+            table:    table.to_s,
+            year:     now.year,
+            month:    now.month,
+            batch_id: batch_id,
+            backend:  storage_backend
           )
 
           record_archived_batch(
@@ -134,16 +135,17 @@ module Legion
             rows:       rows,
             compressed: compressed,
             path:       path,
+            batch_id:   batch_id,
             now:        now
           )
 
           { row_count: rows.size, path: path }
         end
 
-        def record_archived_batch(conn:, table:, rows:, compressed:, path:, now:)
+        def record_archived_batch(conn:, table:, rows:, compressed:, path:, batch_id:, now:)
           conn.transaction do
             conn[:archive_manifest].insert(
-              batch_id:     SecureRandom.uuid,
+              batch_id:     batch_id,
               source_table: table.to_s,
               row_count:    rows.size,
               checksum:     Digest::SHA256.hexdigest(compressed),
@@ -167,47 +169,47 @@ module Legion
           output.string
         end
 
-        def upload_s3(data:, table:, year:, month:, batch_n:)
+        def upload_s3(data:, table:, year:, month:, batch_id:)
           raise UploadError, 'S3 backend not available: Legion::Extensions::S3::Runners::Put not defined' unless defined?(Legion::Extensions::S3::Runners::Put)
 
-          key = "legion-archive/#{table}/#{year}/#{month}/batch_#{batch_n}.jsonl.gz"
+          key = "legion-archive/#{table}/#{year}/#{month}/batch_#{batch_id}.jsonl.gz"
           Legion::Extensions::S3::Runners::Put.run(key: key, body: data)
           log.info "Archiver uploaded batch to s3 key=#{key}"
           "s3://#{key}"
         rescue UploadError => e
-          handle_exception(e, level: :error, handled: false, operation: :upload_s3, table: table, year: year, month: month, batch_n: batch_n)
+          handle_exception(e, level: :error, handled: false, operation: :upload_s3, table: table, year: year, month: month, batch_id: batch_id)
           raise
         rescue StandardError => e
-          handle_exception(e, level: :error, handled: true, operation: :upload_s3, table: table, year: year, month: month, batch_n: batch_n)
+          handle_exception(e, level: :error, handled: true, operation: :upload_s3, table: table, year: year, month: month, batch_id: batch_id)
           raise UploadError, "S3 upload failed: #{e.message}"
         end
 
-        def upload_azure(data:, table:, year:, month:, batch_n:)
+        def upload_azure(data:, table:, year:, month:, batch_id:)
           unless defined?(Legion::Extensions::AzureStorage::Runners::Upload)
             raise UploadError, 'Azure backend not available: Legion::Extensions::AzureStorage::Runners::Upload not defined'
           end
 
-          blob_name = "legion-archive/#{table}/#{year}/#{month}/batch_#{batch_n}.jsonl.gz"
+          blob_name = "legion-archive/#{table}/#{year}/#{month}/batch_#{batch_id}.jsonl.gz"
           Legion::Extensions::AzureStorage::Runners::Upload.run(blob_name: blob_name, data: data)
           log.info "Archiver uploaded batch to azure blob=#{blob_name}"
           "azure://#{blob_name}"
         rescue UploadError => e
-          handle_exception(e, level: :error, handled: false, operation: :upload_azure, table: table, year: year, month: month, batch_n: batch_n)
+          handle_exception(e, level: :error, handled: false, operation: :upload_azure, table: table, year: year, month: month, batch_id: batch_id)
           raise
         rescue StandardError => e
-          handle_exception(e, level: :error, handled: false, operation: :upload_azure, table: table, year: year, month: month, batch_n: batch_n)
+          handle_exception(e, level: :error, handled: false, operation: :upload_azure, table: table, year: year, month: month, batch_id: batch_id)
           raise UploadError, "Azure upload failed: #{e.message}"
         end
 
-        def upload_tmpdir(data:, table:, year:, month:, batch_n:)
+        def upload_tmpdir(data:, table:, year:, month:, batch_id:)
           dir = File.join(Dir.tmpdir, 'legion-archive', table.to_s, year.to_s, month.to_s)
           FileUtils.mkdir_p(dir)
-          path = File.join(dir, "batch_#{batch_n}.jsonl.gz")
+          path = File.join(dir, "batch_#{batch_id}.jsonl.gz")
           File.binwrite(path, data)
           log.info "Archiver stored batch locally path=#{path}"
           "file://#{path}"
         rescue StandardError => e
-          handle_exception(e, level: :error, handled: true, operation: :upload_tmpdir, table: table, year: year, month: month, batch_n: batch_n)
+          handle_exception(e, level: :error, handled: true, operation: :upload_tmpdir, table: table, year: year, month: month, batch_id: batch_id)
           raise UploadError, "Tmpdir upload failed: #{e.message}"
         end
       end

@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.16] - 2026-10-29
+
+### Fixed
+- Generate each archive batch UUID before upload and use it in S3, Azure, and local object names and the manifest. Separate runs no longer overwrite earlier archives in the same month. Direct `upload_batch` callers now supply `batch_id:` instead of `batch_n:` (#73).
+- Load the archive compressor's StringIO dependency explicitly.
+
 ## [1.10.15] - 2026-10-29
 
 ### Fixed

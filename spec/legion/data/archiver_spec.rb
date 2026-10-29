@@ -12,8 +12,14 @@ RSpec.describe Legion::Data::Archiver do
   let(:conn) { Legion::Data.connection }
 
   before(:each) do
+    @archive_dir = Dir.mktmpdir('legion-archive-spec')
+    allow(Dir).to receive(:tmpdir).and_return(@archive_dir)
     allow(Legion::Data::Connection).to receive(:adapter).and_return(:postgres)
     allow(Legion::Data).to receive(:connection).and_return(conn)
+  end
+
+  after(:each) do
+    FileUtils.remove_entry(@archive_dir)
   end
 
   # --- non-postgres guard ---
@@ -118,18 +124,6 @@ RSpec.describe Legion::Data::Archiver do
       expect(names).to contain_exactly('alpha', 'beta')
     end
 
-    it 'gzip decompresses correctly' do
-      insert_old('gamma')
-
-      result = described_class.archive_table(table: table, retention_days: 90, storage_backend: nil)
-      path = result[:paths].first.sub('file://', '')
-      compressed = File.binread(path)
-
-      decompressed = Zlib::GzipReader.new(StringIO.new(compressed)).read
-      expect(decompressed).not_to be_empty
-      expect { JSON.parse(decompressed) }.not_to raise_error
-    end
-
     it 'SHA-256 checksum in manifest matches compressed file data' do
       insert_old('delta')
 
@@ -151,14 +145,21 @@ RSpec.describe Legion::Data::Archiver do
       expect(conn[table].first[:name]).to eq('fresh')
     end
 
-    it 'batch_id in manifest is UUID format' do
-      insert_old('epsilon')
+    it 'preserves both archives across separate runs in the same month' do
+      insert_old('first archive')
+      described_class.archive_table(table: table, storage_backend: nil)
+      insert_old('second archive')
+      described_class.archive_table(table: table, storage_backend: nil)
 
-      described_class.archive_table(table: table, retention_days: 90, storage_backend: nil)
-
-      batch_id = conn[:archive_manifest].first[:batch_id]
-      uuid_pattern = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
-      expect(batch_id).to match(uuid_pattern)
+      manifests = conn[:archive_manifest].order(:id).all
+      expect(manifests.map { |row| row[:storage_path] }.uniq.size).to eq(2)
+      names = manifests.map do |manifest|
+        path = manifest[:storage_path].delete_prefix('file://')
+        expect(File.basename(path)).to eq("batch_#{manifest[:batch_id]}.jsonl.gz")
+        expect(Digest::SHA256.file(path).hexdigest).to eq(manifest[:checksum])
+        Zlib::GzipReader.open(path) { |file| Legion::JSON.load(file.read)[:name] }
+      end
+      expect(names).to eq(['first archive', 'second archive'])
     end
 
     it 'retention_days boundary: rows exactly at cutoff are included' do
@@ -258,43 +259,43 @@ RSpec.describe Legion::Data::Archiver do
 
   describe '.upload_batch' do
     let(:compressed_data) { Zlib::Deflate.deflate('test data') }
+    let(:batch_id) { SecureRandom.uuid }
 
     it 'nil backend writes to tmpdir and returns file:// path' do
       path = described_class.upload_batch(
-        data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: nil
+        data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_id: batch_id, backend: nil
       )
       expect(path).to start_with('file://')
-      expect(path).to include('legion-archive')
-      expect(File.exist?(path.sub('file://', ''))).to be true
+      expect(File.binread(path.delete_prefix('file://'))).to eq(compressed_data)
     end
 
-    it 's3 backend routes to S3 runner when defined' do
+    it 'preserves distinct S3 objects and returns their retrievable paths' do
+      objects = {}
       stub_const('Legion::Extensions::S3::Runners::Put', Class.new)
-      allow(Legion::Extensions::S3::Runners::Put).to receive(:run).and_return(nil)
+      allow(Legion::Extensions::S3::Runners::Put).to receive(:run) { |key:, body:| objects[key] = body }
 
-      path = described_class.upload_batch(
-        data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: :s3
-      )
-      expect(path).to start_with('s3://')
-      expect(Legion::Extensions::S3::Runners::Put).to have_received(:run)
+      paths = %w[first second].map do |body|
+        described_class.upload_batch(data: body, table: 'tasks', year: 2026, month: 3, batch_id: SecureRandom.uuid, backend: :s3)
+      end
+      expect(paths.map { |path| objects.fetch(path.delete_prefix('s3://')) }).to eq(%w[first second])
     end
 
-    it 'azure backend routes to AzureStorage runner when defined' do
+    it 'preserves distinct Azure blobs and returns their retrievable paths' do
+      objects = {}
       stub_const('Legion::Extensions::AzureStorage::Runners::Upload', Class.new)
-      allow(Legion::Extensions::AzureStorage::Runners::Upload).to receive(:run).and_return(nil)
+      allow(Legion::Extensions::AzureStorage::Runners::Upload).to receive(:run) { |blob_name:, data:| objects[blob_name] = data }
 
-      path = described_class.upload_batch(
-        data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: :azure
-      )
-      expect(path).to start_with('azure://')
-      expect(Legion::Extensions::AzureStorage::Runners::Upload).to have_received(:run)
+      paths = %w[first second].map do |body|
+        described_class.upload_batch(data: body, table: 'tasks', year: 2026, month: 3, batch_id: SecureRandom.uuid, backend: :azure)
+      end
+      expect(paths.map { |path| objects.fetch(path.delete_prefix('azure://')) }).to eq(%w[first second])
     end
 
     it 'raises UploadError when s3 runner not defined' do
       hide_const('Legion::Extensions::S3::Runners::Put') if defined?(Legion::Extensions::S3::Runners::Put)
       expect do
         described_class.upload_batch(
-          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: :s3
+          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_id: batch_id, backend: :s3
         )
       end.to raise_error(Legion::Data::Archiver::UploadError)
     end
@@ -303,7 +304,7 @@ RSpec.describe Legion::Data::Archiver do
       hide_const('Legion::Extensions::AzureStorage::Runners::Upload') if defined?(Legion::Extensions::AzureStorage::Runners::Upload)
       expect do
         described_class.upload_batch(
-          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: :azure
+          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_id: batch_id, backend: :azure
         )
       end.to raise_error(Legion::Data::Archiver::UploadError)
     end
@@ -314,7 +315,7 @@ RSpec.describe Legion::Data::Archiver do
 
       expect do
         described_class.upload_batch(
-          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_n: 1, backend: :s3
+          data: compressed_data, table: 'tasks', year: 2026, month: 3, batch_id: batch_id, backend: :s3
         )
       end.to raise_error(Legion::Data::Archiver::UploadError, /connection refused/)
     end
