@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.8.0 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.10 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -265,6 +265,8 @@ All settings live under the `data` key. The adapter controls which options apply
   }
 }
 ```
+
+SQLite lock waits use a Ruby busy handler that releases the GVL between retries, so other threads can finish transactions while a writer waits. `data.timeout` sets the wait limit in milliseconds for both databases; when unset, shared SQLite uses 5,000 ms and local SQLite uses 30,000 ms. Local connection-specific tuning is applied to every pooled connection. `PRAGMA busy_timeout` does not report the Ruby handler's deadline.
 
 ### MySQL
 

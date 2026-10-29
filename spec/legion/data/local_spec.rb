@@ -45,6 +45,20 @@ RSpec.describe Legion::Data::Local do
       described_class.setup(database: test_db)
       expect(described_class.connection).to equal(conn1)
     end
+
+    it 'initializes connection-specific settings on every pooled connection' do
+      described_class.setup(database: test_db)
+      connection = described_class.connection
+      connection.synchronize do
+        first = %w[synchronous cache_size mmap_size].map { |pragma| connection.fetch("PRAGMA #{pragma}").single_value }
+        second = Thread.new do
+          %w[synchronous cache_size mmap_size].map { |pragma| connection.fetch("PRAGMA #{pragma}").single_value }
+        end.value
+
+        expect(first).to eq([1, -20_000, 268_435_456])
+        expect(second).to eq(first)
+      end
+    end
   end
 
   describe '.shutdown' do

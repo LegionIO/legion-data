@@ -386,6 +386,20 @@ module Legion
           creds
         end
 
+        def configure_sqlite_busy_handler(connection:, timeout:)
+          timeout_seconds = timeout.to_f / 1000
+          deadline = nil
+          connection.busy_handler do |attempt|
+            now = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+            deadline = now + timeout_seconds if attempt.zero?
+            remaining = deadline - now
+            next false unless remaining.positive?
+
+            sleep([0.001, remaining].min)
+            true
+          end
+        end
+
         def creds_builder(final_creds = {})
           final_creds.merge! Legion::Data::Settings.creds(adapter)
           final_creds.merge! Legion::Settings[:data][:creds] if Legion::Settings[:data][:creds].is_a? Hash
@@ -518,6 +532,7 @@ module Legion
             val = data.key?(key) && !data[key].nil? ? data[key] : defaults[key]
             opts[key] = val unless val.nil?
           end
+          opts[:after_connect] = proc { |connection| configure_sqlite_busy_handler(connection: connection, timeout: opts[:timeout]) } if adapter == :sqlite
 
           opts
         end

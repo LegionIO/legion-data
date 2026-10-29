@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.10] - 2026-10-29
+
+### Fixed
+- Release Ruby threads while SQLite waits for write locks, with bounded per-connection busy handlers. Apply local SQLite tuning to every pooled connection and honor explicit `data.timeout` values (#67).
+
 ## [1.10.9] - 2026-07-31
 ### Fixed
 - **Postgres session timeouts**: Apply `statement_timeout` (default 5000ms) and `lock_timeout` (default 2000ms) via `after_connect` hook on every new Postgres connection. Prevents unbounded `SELECT` or lock-wait from hanging the process indefinitely — the root cause of ~1h50m connection wedges.
