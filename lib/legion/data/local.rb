@@ -51,10 +51,11 @@ module Legion
 
           @connection = ::Sequel.connect(opts)
           @connection.run('PRAGMA journal_mode=WAL')
-          @connected = true
           run_migrations
+          @connected = true
           log.info "Legion::Data::Local connected to #{db_file} (WAL mode, #{opts[:timeout]}ms busy timeout, 20MB cache, 256MB mmap)"
-        rescue StandardError => e
+        rescue StandardError, LoadError => e
+          shutdown
           handle_exception(e, level: :error, handled: false, operation: :local_setup, database: db_file)
           raise
         end
@@ -75,6 +76,10 @@ module Legion
           @registered_migrations ||= {}
           @registered_migrations[name] = path
           run_single_migration(name, path) if connected?
+        rescue StandardError, LoadError => e
+          shutdown
+          handle_exception(e, level: :error, handled: false, operation: :register_migrations, name: name, path: path)
+          raise
         end
 
         def registered_migrations
@@ -143,8 +148,9 @@ module Legion
 
           table = :"schema_migrations_#{name}"
           ::Sequel::TimestampMigrator.new(@connection, path, table: table).run
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :local_migration, name: name, path: path)
+        rescue StandardError, LoadError => e
+          handle_exception(e, level: :error, handled: false, operation: :local_migration, name: name, path: path)
+          raise
         end
 
         def local_settings

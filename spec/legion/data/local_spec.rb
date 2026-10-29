@@ -136,5 +136,31 @@ RSpec.describe Legion::Data::Local do
       described_class.setup(database: test_db)
       expect(described_class.connection.table_exists?(:local_test_table)).to be true
     end
+
+    it 'leaves failed startup disconnected and retries pending migrations' do
+      broken_migration = File.join(migrations_dir, '20260316000002_broken.rb')
+      File.write(broken_migration, "Sequel.migration { change { raise 'broken migration' } }")
+      described_class.register_migrations(name: :test, path: migrations_dir)
+
+      expect { described_class.setup(database: test_db) }.to raise_error(RuntimeError, 'broken migration')
+      expect(described_class.connected?).to be(false)
+      expect(described_class.connection).to be_nil
+
+      File.write(broken_migration, 'Sequel.migration { change { add_column :local_test_table, :recovered, Integer } }')
+      described_class.setup(database: test_db)
+      expect(described_class.connected?).to be(true)
+      expect(described_class.connection[:local_test_table].columns).to include(:recovered)
+    end
+
+    it 'propagates migrations registered after startup and clears readiness on failure' do
+      described_class.setup(database: test_db)
+      described_class.connection.create_table(:local_test_table) { primary_key :id }
+      connection = described_class.connection
+
+      expect { described_class.register_migrations(name: :test, path: migrations_dir) }.to raise_error(Sequel::DatabaseError, /already exists/)
+      expect(described_class.connected?).to be(false)
+      expect(described_class.connection).to be_nil
+      expect(connection.pool.size).to eq(0)
+    end
   end
 end

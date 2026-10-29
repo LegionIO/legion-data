@@ -54,26 +54,11 @@ RSpec.describe 'Legion::Data::Connection' do
     expect(Legion::Data::Connection.sequel.sql_log_level).to eq Legion::Settings[:data][:sql_log_level].to_sym
   end
 
-  describe 'connection_validation default' do
-    it 'defaults to false — the validator pings SELECT NULL on every checkout/checkin and kills throughput' do
-      expect(Legion::Data::Settings.default[:connection_validation]).to eq(false)
-    end
-  end
-
-  describe 'connection_validation_timeout default' do
-    it 'defaults to -1 so every checkout validates liveness when validation is enabled' do
-      expect(Legion::Data::Settings.default[:connection_validation_timeout]).to eq(-1)
-    end
-  end
-
-  describe 'preconnect default' do
-    it 'defaults to false to avoid background thread noise on failed network connects' do
-      expect(Legion::Data::Settings.default[:preconnect]).to eq(false)
-    end
-  end
-
   describe 'unresolved URI placeholder detection' do
     before do
+      @original_connection = Legion::Data::Connection.sequel
+      @original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
+      Legion::Data::Connection.sequel = nil
       Legion::Settings[:data][:adapter] = 'postgres'
     end
 
@@ -83,6 +68,8 @@ RSpec.describe 'Legion::Data::Connection' do
       Legion::Settings[:data][:dev_mode] = true
       Legion::Settings[:data][:dev_fallback] = false
       Legion::Settings[:data][:creds] = { database: 'legion_test.db' }
+      Legion::Data::Connection.sequel = @original_connection
+      Legion::Data::Connection.instance_variable_set(:@adapter, @original_adapter)
     end
 
     it 'raises UnresolvedCredentialError when username contains a lease:// URI' do

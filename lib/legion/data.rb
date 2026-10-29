@@ -48,6 +48,11 @@ module Legion
         setup_cache
         setup_local
         log.info 'Legion::Data setup complete'
+      rescue StandardError, LoadError => e
+        shutdown
+        Legion::Data::Connection.sequel = nil
+        handle_exception(e, level: :fatal, handled: false, operation: :setup)
+        raise
       end
 
       def setup_local
@@ -62,10 +67,19 @@ module Legion
 
       def setup_global
         connection_setup
+        Legion::Settings[:data][:connected] = false
+        Legion::Settings[:data][:migrations][:ran] = false
+        Legion::Settings[:data][:models][:loaded] = false
         migrate
         load_models
-      rescue StandardError => e
-        handle_exception(e, level: :fatal, operation: :setup_global)
+        Legion::Settings[:data][:connected] = true
+      rescue StandardError, LoadError => e
+        Legion::Data::Connection.shutdown
+        Legion::Data::Connection.sequel = nil
+        Legion::Settings[:data][:migrations][:ran] = false
+        Legion::Settings[:data][:models][:loaded] = false
+        handle_exception(e, level: :fatal, handled: false, operation: :setup_global)
+        raise
       end
 
       def setup_cache

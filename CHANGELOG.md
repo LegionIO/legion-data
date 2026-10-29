@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.14] - 2026-10-29
+
+### Fixed
+- Propagate fatal connection configuration, shared migration, model load, and local migration failures. Close failed setup connections, clear readiness, and allow setup to retry rather than continuing with partially initialized databases (#71).
+
 ## [1.10.13] - 2026-10-29
 
 ### Fixed

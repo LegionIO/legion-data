@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.13 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.14 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -22,6 +22,8 @@ Core responsibilities:
 | Local state | on-node SQLite cognitive state, independent of the shared database |
 
 The schema is portable by default across SQLite, MySQL, and PostgreSQL. PostgreSQL-only behavior is isolated to features that need PostgreSQL, such as Apollo vector columns.
+
+`Legion::Data.setup` raises on fatal connection configuration, migration, or model-loading failures rather than announcing successful startup. Failed setup closes its database connections and clears readiness; fix the underlying error before retrying. Local migrations registered after startup also propagate failures and leave the local database disconnected until setup succeeds.
 
 ## Supported Databases
 

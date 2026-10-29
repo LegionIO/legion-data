@@ -171,6 +171,9 @@ module Legion
         end
 
         def setup
+          Legion::Settings[:data][:connected] = false
+          @sequel&.disconnect
+          @sequel = nil
           @adapter = Legion::Settings[:data][:adapter]&.to_sym || :sqlite
           opts = sequel_opts
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
@@ -185,7 +188,7 @@ module Legion
                       rescue UnresolvedCredentialError => e
                         handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
                         raise
-                      rescue StandardError => e
+                      rescue ::Sequel::DatabaseConnectionError => e
                         raise unless dev_fallback?
 
                         log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
@@ -199,9 +202,14 @@ module Legion
                       end
                     end
           @replica_servers = @sequel.opts.fetch(:servers, {}).keys
-          Legion::Settings[:data][:connected] = true
           log_connection_info
           configure_extensions
+          Legion::Settings[:data][:connected] = true
+        rescue StandardError, LoadError => e
+          shutdown
+          @sequel = nil
+          handle_exception(e, level: :fatal, handled: false, operation: :connection_setup)
+          raise
         end
 
         # Returns connection metadata for health checks and diagnostics.
@@ -689,13 +697,15 @@ module Legion
 
           install_auth_failure_hook
         rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
+          handle_exception(e, level: :error, handled: false, operation: :configure_extensions, adapter: adapter)
+          raise
         end
 
         def install_auth_failure_hook
           Legion::Data::AuthFailureHandler.install(@sequel)
         rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :install_auth_failure_hook)
+          handle_exception(e, level: :error, handled: false, operation: :install_auth_failure_hook)
+          raise
         end
 
         def build_data_logger
