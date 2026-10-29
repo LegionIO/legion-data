@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.16 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.17 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -418,6 +418,10 @@ Replica URLs initialize a sharded pool at startup. URL-specific options override
 ### Archive Objects
 
 Each archive batch receives a UUID before upload. S3, Azure, and local object paths use `legion-archive/<table>/<year>/<month>/batch_<uuid>.jsonl.gz`; the same UUID is stored in `archive_manifest.batch_id`. Repeated runs do not reuse numbered object names. Existing manifest paths remain valid; no stored objects are renamed. Direct `Archiver.upload_batch` callers must supply `batch_id:` instead of `batch_n:`.
+
+### Encryption Key Cache
+
+The default scope (`tenant_id: nil`) and tenant IDs have separate cache entries, including a tenant literally named `__default__`. Restart processes or clear existing key-provider caches when upgrading. This fix does not rewrite existing ciphertext: if that tenant name was used with the old cache, assess records encrypted with the wrong scope's key and re-encrypt them with the intended key. The reader does not fall back to another scope's key.
 
 ---
 
