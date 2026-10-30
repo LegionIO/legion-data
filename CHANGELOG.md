@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.25] - 2026-10-29
+
+### Fixed
+- Archive generic retention backlogs in primary-key-ordered, bounded transactions. Copy locked rows and delete only their complete identities; verify deletion counts and roll back inconsistent batches. Independent workers cannot copy the same locked rows, and concurrent archive-table creation handles PostgreSQL catalog races (#82).
+- Add an optional positive `batch_size` (default 1000), require a declared source primary key, and support composite keys without exceeding SQLite predicate-depth limits. Completed batches survive later failures or process interruption; reruns move only remaining eligible records and report their aggregate count.
+
 ## [1.10.24] - 2026-10-29
 
 ### Fixed

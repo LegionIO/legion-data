@@ -237,6 +237,18 @@ After migration 139, `AuditRecord.append` serializes each chain and `EventStore.
 
 Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
 
+### Bounded Retention
+
+```ruby
+Legion::Data::Retention.archive_old_records(
+  table: :audit_log, archive_after_days: 90, batch_size: 1000
+) # => { archived: total_moved, table: :audit_log }
+```
+
+Source tables need a declared primary key, including composite keys. `batch_size` must be a positive integer and bounds each materialized batch. Rows are selected in primary-key order; PostgreSQL/MySQL lock them and SQLite uses an immediate write transaction. Each batch copies and deletes exactly the same identities atomically, including when other rows become eligible during the copy.
+
+Outside a caller-owned transaction, each batch commits independently. A later failure is raised without undoing earlier batches; rerun to archive the remaining eligible rows. A successful result sums that invocation's moved rows. If the caller wraps retention in its own transaction, that outer transaction still controls commit and lock lifetime.
+
 ### Audit Verification After Retention
 
 `Legion::Data::Model::AuditLog.verify_chain` verifies hot `audit_log` rows together with retained `audit_log_archive` rows in one ordered SQL statement. Moving records between these tables does not discard their predecessors or create a mixed-snapshot boundary. Archived content is rehashed; missing predecessors, modified content, and duplicate copies remain verification failures.
