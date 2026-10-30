@@ -1,8 +1,8 @@
 # legion-data
 
-Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
+Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations, Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.17 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.18 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -18,10 +18,10 @@ Core responsibilities:
 | Audit and governance | `audit_log`, `audit_records`, `governance_events`, archive manifests |
 | Identity and RBAC | providers, principals, identities, groups, memberships, role grants, runner grants |
 | LLM ledger | conversations, model-visible messages, inference requests/responses, routing, metrics, tool calls, policy/security events |
-| Apollo knowledge | PostgreSQL `pgvector` knowledge entries, relations, expertise, access logs |
+| Apollo knowledge | PostgreSQL `pgvector` or SQLite JSON-vector entries, relations, expertise, access logs |
 | Local state | on-node SQLite cognitive state, independent of the shared database |
 
-The schema is portable by default across SQLite, MySQL, and PostgreSQL. PostgreSQL-only behavior is isolated to features that need PostgreSQL, such as Apollo vector columns.
+The schema is portable by default across SQLite, MySQL, and PostgreSQL. Apollo semantic storage supports PostgreSQL and SQLite; native PostgreSQL vector operations remain adapter-specific.
 
 `Legion::Data.setup` raises on fatal connection configuration, migration, or model-loading failures rather than announcing successful startup. Failed setup closes its database connections and clears readiness; fix the underlying error before retrying. Local migrations registered after startup also propagate failures and leave the local database disconnected until setup succeeds.
 
@@ -75,7 +75,7 @@ Legion::Data (singleton module)
 │   ├── .stats          # Pool metrics, tuning snapshot, adapter-specific DB stats
 │   └── .shutdown       # Disconnect and close query file logger
 │
-├── Migration           # Auto-migration system (97 numbered Sequel DSL migrations)
+├── Migration           # Auto-migration system (numbered Sequel DSL migrations)
 │
 ├── Model               # Sequel model autoloader
 │   └── Models: Extension, Function, Runner, Node, Task, TaskLog, Setting,
@@ -308,7 +308,7 @@ SQLite lock waits use a Ruby busy handler that releases the GVL between retries,
 
 `data.statement_timeout` (default 5,000 ms) and `data.lock_timeout` (default 2,000 ms) are applied before every PostgreSQL connection enters the pool, including startup and replacement connections. Set a value to `null` to leave that server setting unchanged, or `0` to explicitly disable the corresponding PostgreSQL timeout.
 
-PostgreSQL with `pgvector` is required for Apollo models:
+PostgreSQL Apollo storage requires these extensions (SQLite uses JSON vectors instead):
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -488,7 +488,9 @@ All new tables follow a column convention. Required fields are present on every 
 | `ApolloExpertise` | `apollo_expertise` | Per-agent domain expertise — PostgreSQL only |
 | `ApolloAccessLog` | `apollo_access_log` | Apollo access audit log — PostgreSQL only |
 
-Apollo models require PostgreSQL with the `pgvector` extension. They are skipped silently on SQLite and MySQL.
+The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migration 137 adds active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
+
+Migration 137 preserves existing rows and hashes, replaces active hash uniqueness with scope/owner uniqueness, and leaves legacy provenance unknown for application-driven reembedding. It drops incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply it before deploying `lex-apollo >= 0.4.45`.
 
 The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces provide cleaner Sequel model names for API-facing code while preserving the legacy flat model classes. Official LLM lifecycle models live under `Legion::Data::Models::LLM`.
 
@@ -540,7 +542,7 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 
 ## Migrations
 
-97 numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). Key milestones:
+Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). Key milestones:
 
 | Range | What was added |
 |-------|---------------|
@@ -561,6 +563,9 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 | 077–090 | Portable LLM lifecycle schema: conversations, messages, inference requests/responses, route attempts, inference metrics, provider-requested tool calls, compactions, policy/security, and registry events |
 | 091–096 | Portable identity companion schema with integer primary keys, public UUIDs, provider capabilities, principals, identities, groups, memberships, and audit log |
 | 097 | LLM dispatch identifiers for fleet operation, correlation, idempotency, provider instance, and dispatch path |
+| 100–102 | SQLite Apollo entries, ownership, and access-scope indexes |
+| 119–120 | Portable missing Apollo tables and indexes |
+| 137 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness |
 
 Run migrations standalone:
 
@@ -601,7 +606,7 @@ bundle exec legionio_migrate
 6. RBAC assignment tables
 7. Audit log with tamper-evident hash chain
 8. Governance event store with append-only integrity
-9. Apollo shared knowledge store (PostgreSQL + pgvector, used by `lex-apollo`)
+9. Apollo shared knowledge store (PostgreSQL + pgvector or SQLite, used by `lex-apollo`)
 10. Local SQLite for agentic cognitive state — always on-node, independent of shared DB
 11. Financial logging for UAIS cost recovery
 12. Global tool embedding cache (L4 tier for `Legion::Tools::EmbeddingCache`)
