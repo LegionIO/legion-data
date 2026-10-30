@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.8.0 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.17 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -22,6 +22,8 @@ Core responsibilities:
 | Local state | on-node SQLite cognitive state, independent of the shared database |
 
 The schema is portable by default across SQLite, MySQL, and PostgreSQL. PostgreSQL-only behavior is isolated to features that need PostgreSQL, such as Apollo vector columns.
+
+`Legion::Data.setup` raises on fatal connection configuration, migration, or model-loading failures rather than announcing successful startup. Failed setup closes its database connections and clears readiness; fix the underlying error before retrying. Local migrations registered after startup also propagate failures and leave the local database disconnected until setup succeeds.
 
 ## Supported Databases
 
@@ -239,6 +241,8 @@ Legion::Data::Rls.with_tenant(tenant_id) do
 end
 ```
 
+The scope holds one pooled connection until the block finishes and its prior tenant state has been restored, including when the block raises. Nested scopes restore the outer tenant. Run scoped database work in the calling thread; newly spawned threads do not inherit its tenant scope.
+
 ### Permission Checks
 
 ```ruby
@@ -265,6 +269,8 @@ All settings live under the `data` key. The adapter controls which options apply
   }
 }
 ```
+
+SQLite lock waits use a Ruby busy handler that releases the GVL between retries, so other threads can finish transactions while a writer waits. `data.timeout` sets the wait limit in milliseconds for both databases; when unset, shared SQLite uses 5,000 ms and local SQLite uses 30,000 ms. Local connection-specific tuning is applied to every pooled connection. `PRAGMA busy_timeout` does not report the Ruby handler's deadline.
 
 ### MySQL
 
@@ -299,6 +305,8 @@ All settings live under the `data` key. The adapter controls which options apply
   }
 }
 ```
+
+`data.statement_timeout` (default 5,000 ms) and `data.lock_timeout` (default 2,000 ms) are applied before every PostgreSQL connection enters the pool, including startup and replacement connections. Set a value to `null` to leave that server setting unchanged, or `0` to explicitly disable the corresponding PostgreSQL timeout.
 
 PostgreSQL with `pgvector` is required for Apollo models:
 
@@ -390,6 +398,10 @@ Two independent caching tiers, both disabled by default:
 Legion::Data.reload_static_cache
 ```
 
+### Query File Logging
+
+Enable `data.query_log` (or `data.local.query_log`) to write SQL to a dedicated file. Write and close I/O failures, including a full disk, are reported through Legion::Logging without changing the database operation's result or replacing its exception. Opening the configured log file must still succeed during setup.
+
 ### Read Replicas (PostgreSQL)
 
 ```json
@@ -400,6 +412,16 @@ Legion::Data.reload_static_cache
   }
 }
 ```
+
+Replica URLs initialize a sharded pool at startup. URL-specific options override primary connection options; omitted credentials and session timeouts are inherited. Duplicate URLs are registered once as `read_0`, `read_1`, and so on. Reads remain on the primary unless explicitly routed, for example `dataset.server(Legion::Data::Connection.read_server)`. With no replicas configured, `read_server` returns `:default`.
+
+### Archive Objects
+
+Each archive batch receives a UUID before upload. S3, Azure, and local object paths use `legion-archive/<table>/<year>/<month>/batch_<uuid>.jsonl.gz`; the same UUID is stored in `archive_manifest.batch_id`. Repeated runs do not reuse numbered object names. Existing manifest paths remain valid; no stored objects are renamed. Direct `Archiver.upload_batch` callers must supply `batch_id:` instead of `batch_n:`.
+
+### Encryption Key Cache
+
+The default scope (`tenant_id: nil`) and tenant IDs have separate cache entries, including a tenant literally named `__default__`. Restart processes or clear existing key-provider caches when upgrading. This fix does not rewrite existing ciphertext: if that tenant name was used with the old cache, assess records encrypted with the wrong scope's key and re-encrypt them with the intended key. The reader does not fall back to another scope's key.
 
 ---
 

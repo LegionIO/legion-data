@@ -32,6 +32,11 @@ module Legion
             val = data.key?(key) && !data[key].nil? ? data[key] : sqlite_defaults[key]
             opts[key] = val unless val.nil?
           end
+          opts[:timeout] = data[:timeout] || 30_000
+          opts[:after_connect] = proc do |connection|
+            Legion::Data::Connection.configure_sqlite_busy_handler(connection: connection, timeout: opts[:timeout])
+            connection.execute_batch('PRAGMA synchronous=NORMAL; PRAGMA cache_size=-20000; PRAGMA mmap_size=268435456')
+          end
 
           if local_settings[:query_log]
             log_path = File.join(Legion::Data::Connection::QUERY_LOG_DIR, 'data-local-query.log')
@@ -46,14 +51,11 @@ module Legion
 
           @connection = ::Sequel.connect(opts)
           @connection.run('PRAGMA journal_mode=WAL')
-          @connection.run('PRAGMA busy_timeout=30000')
-          @connection.run('PRAGMA synchronous=NORMAL')
-          @connection.run('PRAGMA cache_size=-20000')
-          @connection.run('PRAGMA mmap_size=268435456')
-          @connected = true
           run_migrations
-          log.info "Legion::Data::Local connected to #{db_file} (WAL mode, 30s busy_timeout, 20MB cache, 256MB mmap)"
-        rescue StandardError => e
+          @connected = true
+          log.info "Legion::Data::Local connected to #{db_file} (WAL mode, #{opts[:timeout]}ms busy timeout, 20MB cache, 256MB mmap)"
+        rescue StandardError, LoadError => e
+          shutdown
           handle_exception(e, level: :error, handled: false, operation: :local_setup, database: db_file)
           raise
         end
@@ -74,6 +76,10 @@ module Legion
           @registered_migrations ||= {}
           @registered_migrations[name] = path
           run_single_migration(name, path) if connected?
+        rescue StandardError, LoadError => e
+          shutdown
+          handle_exception(e, level: :error, handled: false, operation: :register_migrations, name: name, path: path)
+          raise
         end
 
         def registered_migrations
@@ -142,8 +148,9 @@ module Legion
 
           table = :"schema_migrations_#{name}"
           ::Sequel::TimestampMigrator.new(@connection, path, table: table).run
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :local_migration, name: name, path: path)
+        rescue StandardError, LoadError => e
+          handle_exception(e, level: :error, handled: false, operation: :local_migration, name: name, path: path)
+          raise
         end
 
         def local_settings

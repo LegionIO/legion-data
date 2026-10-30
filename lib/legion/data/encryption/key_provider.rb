@@ -15,8 +15,7 @@ module Legion
         end
 
         def key_for(tenant_id: nil)
-          cache_key = tenant_id || '__default__'
-          @key_cache[cache_key] ||= derive_key(tenant_id)
+          @key_cache[tenant_id] ||= derive_key(tenant_id)
         end
 
         def clear_cache!

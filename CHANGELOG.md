@@ -1,5 +1,47 @@
 # Legion::Data Changelog
 
+## [1.10.17] - 2026-10-29
+
+### Fixed
+- Cache the default encryption key under `nil`, separately from every tenant ID, including the literal `__default__`. Key selection no longer depends on which scope was requested first (#74).
+- Scope database spec cleanup to initialized resources so early setup errors are preserved and original state, including nil connection snapshots, is restored (#83).
+
+## [1.10.16] - 2026-10-29
+
+### Fixed
+- Generate each archive batch UUID before upload and use it in S3, Azure, and local object names and the manifest. Separate runs no longer overwrite earlier archives in the same month. Direct `upload_batch` callers now supply `batch_id:` instead of `batch_n:` (#73).
+- Load the archive compressor's StringIO dependency explicitly.
+
+## [1.10.15] - 2026-10-29
+
+### Fixed
+- Isolate query-log write and close I/O failures from database operations. Full disks no longer turn committed writes into apparent failures or replace the original SQL exception; logging failures remain reported through Legion::Logging (#72).
+
+## [1.10.14] - 2026-10-29
+
+### Fixed
+- Propagate fatal connection configuration, shared migration, model load, and local migration failures. Close failed setup connections, clear readiness, and allow setup to retry rather than continuing with partially initialized databases (#71).
+
+## [1.10.13] - 2026-10-29
+
+### Fixed
+- Build PostgreSQL replica pools before connecting, decode replica URLs into valid Sequel server options, and preserve inherited credentials and session timeouts. Clear replica routing on shutdown and reconfiguration (#70).
+
+## [1.10.12] - 2026-10-29
+
+### Fixed
+- Keep PostgreSQL tenant setup, scoped queries, and restoration on one checked-out connection. Preserve nested tenant scopes and clean up after exceptions without leaking tenant state to another borrower (#69).
+
+## [1.10.11] - 2026-10-29
+
+### Fixed
+- Apply PostgreSQL statement and lock timeouts before any connection is opened, including initial, preconnected, and replacement sessions (#68).
+
+## [1.10.10] - 2026-10-29
+
+### Fixed
+- Release Ruby threads while SQLite waits for write locks, with bounded per-connection busy handlers. Apply local SQLite tuning to every pooled connection and honor explicit `data.timeout` values (#67).
+
 ## [1.10.9] - 2026-07-31
 ### Fixed
 - **Postgres session timeouts**: Apply `statement_timeout` (default 5000ms) and `lock_timeout` (default 2000ms) via `after_connect` hook on every new Postgres connection. Prevents unbounded `SELECT` or lock-wait from hanging the process indefinitely — the root cause of ~1h50m connection wedges.

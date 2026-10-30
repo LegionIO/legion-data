@@ -5,6 +5,7 @@ require 'legion/data/auth_failure_handler'
 
 require 'fileutils'
 require 'sequel'
+require 'uri'
 
 module Legion
   module Data
@@ -142,6 +143,9 @@ module Legion
             @closed = true
             @file.close unless @file.closed?
           end
+        rescue IOError, SystemCallError => e
+          handle_exception(e, level: :warn, handled: true, operation: :query_file_close, path: @path)
+          nil
         end
 
         private
@@ -152,9 +156,7 @@ module Legion
 
             @file.puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S.%L')}] #{level} #{message}"
           end
-        rescue IOError => e
-          return nil if @closed || @file.closed?
-
+        rescue IOError, SystemCallError => e
           handle_exception(e, level: :warn, handled: true, operation: :query_file_write, path: @path)
           nil
         end
@@ -170,10 +172,14 @@ module Legion
         end
 
         def setup
+          Legion::Settings[:data][:connected] = false
+          @sequel&.disconnect
+          @sequel = nil
           @adapter = Legion::Settings[:data][:adapter]&.to_sym || :sqlite
           opts = sequel_opts
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
           @fallback_active = false
+          @replica_servers = []
           @sequel = if adapter == :sqlite
                       ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
                     else
@@ -183,7 +189,7 @@ module Legion
                       rescue UnresolvedCredentialError => e
                         handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
                         raise
-                      rescue StandardError => e
+                      rescue ::Sequel::DatabaseConnectionError => e
                         raise unless dev_fallback?
 
                         log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
@@ -196,10 +202,15 @@ module Legion
                         ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
                       end
                     end
-          Legion::Settings[:data][:connected] = true
+          @replica_servers = @sequel.opts.fetch(:servers, {}).keys
           log_connection_info
           configure_extensions
-          connect_with_replicas
+          Legion::Settings[:data][:connected] = true
+        rescue StandardError, LoadError => e
+          shutdown
+          @sequel = nil
+          handle_exception(e, level: :fatal, handled: false, operation: :connection_setup)
+          raise
         end
 
         # Returns connection metadata for health checks and diagnostics.
@@ -283,6 +294,7 @@ module Legion
           @query_file_logger&.close
           @query_file_logger = nil
           @fallback_active = false
+          @replica_servers = []
           Legion::Settings[:data][:connected] = false
           log.info 'Legion::Data connection closed'
         end
@@ -328,28 +340,6 @@ module Legion
           handle_exception(e, level: :warn, handled: true, operation: :expire_all_pooled_connections)
         end
 
-        def connect_with_replicas
-          return unless adapter == :postgres
-
-          replica_url  = Legion::Settings[:data][:read_replica_url]
-          replica_list = Array(Legion::Settings[:data][:replicas]).dup
-
-          replica_list.prepend(replica_url) if replica_url && !replica_url.empty?
-          replica_list.uniq!
-          replica_list.compact!
-
-          return if replica_list.empty?
-
-          @sequel.extension(:server_block)
-
-          replica_list.each_with_index do |url, idx|
-            @sequel.add_servers("read_#{idx}": url)
-          end
-
-          @replica_servers = replica_list.each_with_index.map { |_, idx| :"read_#{idx}" }
-          log.debug "Registered #{@replica_servers.size} read replica(s)"
-        end
-
         def read_server
           return :default if @replica_servers.nil? || @replica_servers.empty?
 
@@ -384,6 +374,20 @@ module Legion
           end
 
           creds
+        end
+
+        def configure_sqlite_busy_handler(connection:, timeout:)
+          timeout_seconds = timeout.to_f / 1000
+          deadline = nil
+          connection.busy_handler do |attempt|
+            now = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+            deadline = now + timeout_seconds if attempt.zero?
+            remaining = deadline - now
+            next false unless remaining.positive?
+
+            sleep([0.001, remaining].min)
+            true
+          end
         end
 
         def creds_builder(final_creds = {})
@@ -472,7 +476,23 @@ module Legion
           connection_opts = opts.merge(adapter: adapter, **creds_builder)
           validate_no_unresolved_uris!(connection_opts)
           connection_opts[:preconnect] = false if adapter != :sqlite && dev_fallback?
+          if adapter == :postgres
+            servers = postgres_replica_servers
+            connection_opts[:servers] = servers unless servers.empty?
+          end
           connection_opts
+        end
+
+        def postgres_replica_servers
+          data = Legion::Settings[:data]
+          urls = [data[:read_replica_url], *Array(data[:replicas])].compact.reject(&:empty?).uniq
+          urls.each_with_index.to_h do |url, index|
+            uri = URI.parse(url)
+            raise ArgumentError, 'Read replicas require PostgreSQL URLs' unless %w[postgres postgresql].include?(uri.scheme)
+
+            options = ::Sequel::Database.send(:options_from_uri, uri).compact
+            [:"read_#{index}", options]
+          end
         end
 
         def validate_no_unresolved_uris!(connection_opts)
@@ -518,8 +538,16 @@ module Legion
             val = data.key?(key) && !data[key].nil? ? data[key] : defaults[key]
             opts[key] = val unless val.nil?
           end
+          opts[:after_connect] = proc { |connection| configure_sqlite_busy_handler(connection: connection, timeout: opts[:timeout]) } if adapter == :sqlite
+          opts[:connect_sqls] = postgres_connect_sqls(data) if adapter == :postgres
 
           opts
+        end
+
+        def postgres_connect_sqls(data)
+          %i[statement_timeout lock_timeout].filter_map do |setting|
+            "SET #{setting} = '#{data[setting].to_i}ms'" if data[setting]
+          end
         end
 
         def tuning_stats(data)
@@ -655,7 +683,7 @@ module Legion
           if adapter == :postgres
             Sequel.extension(:pg_array)
             @sequel.extension(:pg_array)
-            install_postgres_session_timeouts
+            @sequel.extension(:server_block) unless @replica_servers.empty?
           end
 
           if data[:connection_validation] != false
@@ -670,28 +698,15 @@ module Legion
 
           install_auth_failure_hook
         rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
-        end
-
-        def install_postgres_session_timeouts
-          data = Legion::Settings[:data]
-          stmt_timeout = data[:statement_timeout]
-          lck_timeout = data[:lock_timeout]
-
-          @sequel.pool.after_connect = proc do |conn|
-            conn.exec("SET statement_timeout = '#{stmt_timeout.to_i}ms'") if stmt_timeout
-            conn.exec("SET lock_timeout = '#{lck_timeout.to_i}ms'") if lck_timeout
-          end
-
-          log.info("Postgres session timeouts: statement_timeout=#{stmt_timeout}ms, lock_timeout=#{lck_timeout}ms")
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :install_postgres_session_timeouts)
+          handle_exception(e, level: :error, handled: false, operation: :configure_extensions, adapter: adapter)
+          raise
         end
 
         def install_auth_failure_hook
           Legion::Data::AuthFailureHandler.install(@sequel)
         rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :install_auth_failure_hook)
+          handle_exception(e, level: :error, handled: false, operation: :install_auth_failure_hook)
+          raise
         end
 
         def build_data_logger

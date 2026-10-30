@@ -47,11 +47,17 @@ module Legion
       end
 
       def with_tenant(tenant_id)
-        previous = current_tenant
-        assign_tenant(tenant_id)
-        yield
-      ensure
-        previous ? assign_tenant(previous) : reset_tenant
+        return yield unless rls_enabled?
+
+        Legion::Data.connection.synchronize do
+          previous = current_tenant
+          begin
+            assign_tenant(tenant_id)
+            yield
+          ensure
+            previous ? assign_tenant(previous) : reset_tenant
+          end
+        end
       end
     end
   end

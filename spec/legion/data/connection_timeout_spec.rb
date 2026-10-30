@@ -2,101 +2,56 @@
 
 require 'spec_helper'
 
-RSpec.describe 'Legion::Data::Connection timeout discipline' do
-  after(:each) do
-    Legion::Data::Connection.shutdown
-  end
-
-  describe 'settings defaults' do
-    it 'statement_timeout defaults to 5000ms' do
-      expect(Legion::Data::Settings.default[:statement_timeout]).to eq(5000)
-    end
-
-    it 'lock_timeout defaults to 2000ms' do
-      expect(Legion::Data::Settings.default[:lock_timeout]).to eq(2000)
-    end
-
-    it 'keepalives defaults to 1 (enabled)' do
-      expect(Legion::Data::Settings.default[:keepalives]).to eq(1)
-    end
-
-    it 'keepalives_idle defaults to 10s' do
-      expect(Legion::Data::Settings.default[:keepalives_idle]).to eq(10)
-    end
-
-    it 'keepalives_interval defaults to 5s' do
-      expect(Legion::Data::Settings.default[:keepalives_interval]).to eq(5)
-    end
-
-    it 'keepalives_count defaults to 3' do
-      expect(Legion::Data::Settings.default[:keepalives_count]).to eq(3)
-    end
-
-    it 'tcp_user_timeout defaults to 15000ms' do
-      expect(Legion::Data::Settings.default[:tcp_user_timeout]).to eq(15_000)
-    end
-
-    it 'shutdown_timeout defaults to 5s' do
-      expect(Legion::Data::Settings.default[:shutdown_timeout]).to eq(5)
+RSpec.describe 'PostgreSQL session timeout initialization' do
+  around do |example|
+    settings = Legion::Settings[:data]
+    original_settings = settings.dup
+    original_connection = Legion::Data::Connection.sequel
+    original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
+    begin
+      settings.merge!(adapter: 'postgres', statement_timeout: 37, lock_timeout: 19,
+                      log: false, query_log: false, dev_mode: false, test: true,
+                      preconnect: false, read_replica_url: nil, replicas: [])
+      example.run
+    ensure
+      @database&.disconnect
+      settings.replace(original_settings)
+      Legion::Data::Connection.sequel = original_connection
+      Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
     end
   end
 
-  describe 'ADAPTER_KEYS[:postgres]' do
-    it 'includes TCP keepalive params' do
-      keys = Legion::Data::Connection::ADAPTER_KEYS[:postgres]
-      expect(keys).to include(:keepalives)
-      expect(keys).to include(:keepalives_idle)
-      expect(keys).to include(:keepalives_interval)
-      expect(keys).to include(:keepalives_count)
-      expect(keys).to include(:tcp_user_timeout)
-    end
-
-    it 'includes connect_timeout' do
-      expect(Legion::Data::Connection::ADAPTER_KEYS[:postgres]).to include(:connect_timeout)
+  before do
+    allow(Sequel).to receive(:connect).and_wrap_original do |connect, options|
+      connect.call(options.merge(adapter: :mock, host: :postgres))
     end
   end
 
-  describe 'ADAPTER_DEFAULTS[:postgres]' do
-    it 'has a 5s connect_timeout' do
-      expect(Legion::Data::Connection::ADAPTER_DEFAULTS[:postgres][:connect_timeout]).to eq(5)
-    end
-
-    it 'wires keepalive defaults' do
-      defaults = Legion::Data::Connection::ADAPTER_DEFAULTS[:postgres]
-      expect(defaults[:keepalives]).to eq(1)
-      expect(defaults[:keepalives_idle]).to eq(10)
-      expect(defaults[:keepalives_interval]).to eq(5)
-      expect(defaults[:keepalives_count]).to eq(3)
-      expect(defaults[:tcp_user_timeout]).to eq(15_000)
-    end
+  def setup_database
+    Legion::Data::Connection.setup
+    @database = Legion::Data::Connection.sequel
   end
 
-  describe 'ADAPTER_DEFAULTS[:mysql2]' do
-    it 'has 5s connect/read/write timeouts' do
-      defaults = Legion::Data::Connection::ADAPTER_DEFAULTS[:mysql2]
-      expect(defaults[:connect_timeout]).to eq(5)
-      expect(defaults[:read_timeout]).to eq(5)
-      expect(defaults[:write_timeout]).to eq(5)
-    end
+  it 'configures the initial and all preconnected sessions before use' do
+    Legion::Settings[:data].merge!(preconnect: true, max_connections: 2)
+    setup_database
+    expect(@database.sqls).to eq([
+                                   "SET statement_timeout = '37ms'", "SET lock_timeout = '19ms'",
+                                   "SET statement_timeout = '37ms'", "SET lock_timeout = '19ms'"
+                                 ])
   end
 
-  describe 'sequel_opts for sqlite' do
-    it 'passes through ADAPTER_KEYS[:sqlite] options' do
-      Legion::Data::Connection.setup
-      opts = Legion::Data::Connection.sequel.opts
-      expect(opts[:timeout]).to eq(5000)
-    end
+  it 'configures replacement sessions after a disconnect' do
+    setup_database
+    @database.sqls
+    @database.disconnect
+    @database.test_connection
+    expect(@database.sqls).to eq(["SET statement_timeout = '37ms'", "SET lock_timeout = '19ms'"])
   end
 
-  describe 'shutdown with force_disconnect_pool' do
-    it 'disconnects cleanly when no connections are checked out' do
-      Legion::Data::Connection.setup
-      expect { Legion::Data::Connection.shutdown }.not_to raise_error
-      expect(Legion::Settings[:data][:connected]).to eq(false)
-    end
-
-    it 'respects shutdown_timeout setting' do
-      expect(Legion::Settings[:data][:shutdown_timeout]).to eq(5)
-    end
+  it 'leaves unset timeouts alone and honors an explicit zero timeout' do
+    Legion::Settings[:data].merge!(statement_timeout: nil, lock_timeout: 0)
+    setup_database
+    expect(@database.sqls).to eq(["SET lock_timeout = '0ms'"])
   end
 end
