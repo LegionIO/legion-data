@@ -251,9 +251,13 @@ When the database is unavailable, `Legion::Data::Spool` buffers writes to `~/.le
 
 ```ruby
 spool = Legion::Data::Spool.for(Legion::Extensions::MyLex)
-spool.write({ task_id: SecureRandom.uuid, data: payload })
-spool.drain { |entry| process(entry) }
+spool.write(:events, { task_id: SecureRandom.uuid, data: payload })
+spool.flush(:events) { |entry| process(entry) }
 ```
+
+Replay claims each event with a nonblocking advisory file lock held through the callback and successful deletion. Concurrent processes cannot replay the same live claim. `read` and `clear` skip in-flight entries; `count` includes them until deletion. Corrupt files are quarantined under the same ownership protocol.
+
+Callback failure retains the event and releases its lock. Process exit also releases the lock automatically, so the next drainer can recover it without stale claim markers. Delivery is **at least once**: a crash after an external side effect but before deletion can replay that effect. Callbacks must provide their own idempotency. Single-drainer filename order is preserved, but concurrent completion order is not guaranteed. The spool filesystem must support cooperative advisory locking.
 
 ### Row-Level Security (PostgreSQL)
 

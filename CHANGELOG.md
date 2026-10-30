@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.23] - 2026-10-29
+
+### Fixed
+- Claim spool entries with nonblocking cross-process file locks before reading, replaying, quarantining, or clearing them. Recheck descriptor identity after acquisition so an already-open deleted file cannot replay again. Reads and clears skip in-flight entries (#80).
+- Preserve callback exceptions and pending events for retry; operating-system lock release recovers crashed owners without stale claim files. Delivery remains at least once if a process exits after its side effect but before deleting the event.
+
 ## [1.10.22] - 2026-10-29
 
 ### Fixed
