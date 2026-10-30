@@ -133,36 +133,56 @@ module Legion
       def can_write?(table_name)
         return false unless connected?
 
-        adapter = Legion::Settings[:data][:adapter]&.to_s
-        return true if adapter == 'sqlite'
+        database = connection
+        return false unless database
+        return true if database.database_type == :sqlite
 
-        @write_privileges ||= {}
-        return @write_privileges[table_name] unless @write_privileges[table_name].nil?
+        cache = @write_privileges ||= ObjectSpace::WeakKeyMap.new
+        database.synchronize do |session|
+          privileges = cache[session] ||= {}
+          return privileges[table_name] if privileges.key?(table_name)
 
-        @write_privileges[table_name] = connection
-                                        .fetch("SELECT has_table_privilege(current_user, ?, 'INSERT') AS can", table_name.to_s)
-                                        .first[:can] == true
+          privileges[table_name] = case database.database_type
+                                   when :postgres
+                                     database.fetch("SELECT has_table_privilege(current_user, ?, 'INSERT') AS can", table_name.to_s)
+                                             .server(:default).first[:can] == true
+                                   when :mysql
+                                     database.fetch('EXPLAIN INSERT INTO ? () VALUES ()', Sequel.identifier(table_name)).server(:default).all
+                                     true
+                                   else
+                                     raise Sequel::Error, "Unsupported privilege adapter: #{database.database_type}"
+                                   end
+        end
       rescue StandardError => e
         handle_exception(e, level: :warn, handled: true, operation: :can_write?, table: table_name)
-        @write_privileges[table_name] = false if @write_privileges
         false
       end
 
       def can_read?(table_name)
         return false unless connected?
 
-        adapter = Legion::Settings[:data][:adapter]&.to_s
-        return true if adapter == 'sqlite'
+        database = connection
+        return false unless database
+        return true if database.database_type == :sqlite
 
-        @read_privileges ||= {}
-        return @read_privileges[table_name] unless @read_privileges[table_name].nil?
+        cache = @read_privileges ||= ObjectSpace::WeakKeyMap.new
+        database.synchronize do |session|
+          privileges = cache[session] ||= {}
+          return privileges[table_name] if privileges.key?(table_name)
 
-        @read_privileges[table_name] = connection
-                                       .fetch("SELECT has_table_privilege(current_user, ?, 'SELECT') AS can", table_name.to_s)
-                                       .first[:can] == true
+          privileges[table_name] = case database.database_type
+                                   when :postgres
+                                     database.fetch("SELECT has_table_privilege(current_user, ?, 'SELECT') AS can", table_name.to_s)
+                                             .server(:default).first[:can] == true
+                                   when :mysql
+                                     database.fetch('SELECT * FROM ? LIMIT 0', Sequel.identifier(table_name)).server(:default).all
+                                     true
+                                   else
+                                     raise Sequel::Error, "Unsupported privilege adapter: #{database.database_type}"
+                                   end
+        end
       rescue StandardError => e
         handle_exception(e, level: :warn, handled: true, operation: :can_read?, table: table_name)
-        @read_privileges[table_name] = false if @read_privileges
         false
       end
 

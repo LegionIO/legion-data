@@ -173,6 +173,7 @@ module Legion
             pool = database.pool
             pool.extend(Legion::Data::ConnectionPool) unless pool.is_a?(Legion::Data::ConnectionPool)
           end
+          Legion::Data.reset_privileges!
           @sequel = database
         end
 
@@ -337,6 +338,7 @@ module Legion
           old_user = @sequel.opts[:user]
           @sequel.opts[:user] = new_user
           @sequel.opts[:password] = new_pass
+          Legion::Data.reset_privileges!
 
           @sequel.disconnect
           expire_all_pooled_connections

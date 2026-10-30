@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.24] - 2026-10-29
+
+### Fixed
+- Use the active adapter for privilege checks, including SQLite fallback. PostgreSQL uses native table privileges; MySQL uses nonmutating SELECT and EXPLAIN INSERT probes rather than PostgreSQL-only SQL. Failed queries return false without poisoning future checks (#81).
+- Cache successful privilege lookups per physical connection, invalidate on connection replacement and credential rotation, and prevent in-flight old sessions from overwriting replacement permissions.
+
 ## [1.10.23] - 2026-10-29
 
 ### Fixed

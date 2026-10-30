@@ -279,6 +279,10 @@ Legion::Data.can_read?(:tasks)   # => true
 Legion::Data.reset_privileges!   # clear cached privilege checks
 ```
 
+Checks use the active database adapter, including SQLite fallback, and return false while disconnected. PostgreSQL checks table-level SELECT/INSERT grants. MySQL checks base tables with a zero-row SELECT and a nonexecuting `EXPLAIN INSERT`; checking a MySQL view also requires the privileges needed to explain that view, including SHOW VIEW for writes. Neither probe inserts data.
+
+Successful lookups are cached per physical connection. Connection replacement and credential rotation invalidate caches; query or connection failures return false without caching a denial. Call `reset_privileges!` after changing grants or roles on existing sessions.
+
 ---
 
 ## Configuration
