@@ -9,15 +9,17 @@ RSpec.describe Legion::Data::Connection do
     original_state = %i[@sequel @adapter @replica_servers @fallback_active].to_h do |name|
       [name, described_class.instance_variable_get(name)]
     end
-    settings.merge!(adapter: 'postgres', creds: { user: 'primary', password: 'primary-password', database: 'ledger' },
-                    read_replica_url: nil, replicas: [], log: false, query_log: false, test: true,
-                    preconnect: false, dev_mode: false, shutdown_timeout: 0, statement_timeout: 37, lock_timeout: 19)
     @databases = []
-    example.run
-  ensure
-    @databases.each(&:disconnect)
-    settings.replace(original_settings)
-    original_state.each { |name, value| described_class.instance_variable_set(name, value) }
+    begin
+      settings.merge!(adapter: 'postgres', creds: { user: 'primary', password: 'primary-password', database: 'ledger' },
+                      read_replica_url: nil, replicas: [], log: false, query_log: false, test: true,
+                      preconnect: false, dev_mode: false, shutdown_timeout: 0, statement_timeout: 37, lock_timeout: 19)
+      example.run
+    ensure
+      @databases.each(&:disconnect)
+      settings.replace(original_settings)
+      original_state.each { |name, value| described_class.instance_variable_set(name, value) }
+    end
   end
 
   before do

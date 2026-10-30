@@ -9,24 +9,28 @@ RSpec.describe 'Database initialization failures' do
     original_settings = settings.dup
     original_connection = Legion::Data::Connection.sequel
     original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
-    Dir.mktmpdir('legion-data-initialization') do |dir|
-      @database_path = File.join(dir, 'shared.db')
-      settings.merge!(adapter: 'sqlite', connected: false, creds: { database: @database_path },
-                      readonly: false, log: false, query_log: false, shutdown_timeout: 0,
-                      migrations: settings[:migrations].merge(auto_migrate: true, ran: false),
-                      models: settings[:models].merge(autoload: false, loaded: false),
-                      local: settings[:local].merge(enabled: false))
-      Legion::Data::Connection.sequel = nil
-      @databases = []
-      example.run
+    begin
+      Dir.mktmpdir('legion-data-initialization') do |dir|
+        @database_path = File.join(dir, 'shared.db')
+        settings.merge!(adapter: 'sqlite', connected: false, creds: { database: @database_path },
+                        readonly: false, log: false, query_log: false, shutdown_timeout: 0,
+                        migrations: settings[:migrations].merge(auto_migrate: true, ran: false),
+                        models: settings[:models].merge(autoload: false, loaded: false),
+                        local: settings[:local].merge(enabled: false))
+        Legion::Data::Connection.sequel = nil
+        @databases = []
+        begin
+          example.run
+        ensure
+          Legion::Data::Connection.shutdown
+          @databases.each(&:disconnect)
+        end
+      end
     ensure
-      Legion::Data::Connection.shutdown
-      @databases.each(&:disconnect)
+      settings.replace(original_settings)
+      Legion::Data::Connection.sequel = original_connection
+      Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
     end
-  ensure
-    settings.replace(original_settings)
-    Legion::Data::Connection.sequel = original_connection
-    Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
   end
 
   before do

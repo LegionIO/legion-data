@@ -4,6 +4,7 @@
 
 ### Fixed
 - Cache the default encryption key under `nil`, separately from every tenant ID, including the literal `__default__`. Key selection no longer depends on which scope was requested first (#74).
+- Scope database spec cleanup to initialized resources so early setup errors are preserved and original state, including nil connection snapshots, is restored (#83).
 
 ## [1.10.16] - 2026-10-29
 

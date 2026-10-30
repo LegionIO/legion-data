@@ -8,17 +8,19 @@ RSpec.describe 'SQLite lock contention' do
     settings = Legion::Settings[:data]
     original_settings = settings.slice(:adapter, :timeout, :log, :query_log)
     original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
-    settings.merge!(adapter: 'sqlite', timeout: 1000, log: false, query_log: false)
-    Legion::Data::Connection.instance_variable_set(:@adapter, :sqlite)
-    Dir.mktmpdir('legion-sqlite-contention') do |dir|
-      @path = File.join(dir, 'contention.db')
-      example.run
+    begin
+      settings.merge!(adapter: 'sqlite', timeout: 1000, log: false, query_log: false)
+      Legion::Data::Connection.instance_variable_set(:@adapter, :sqlite)
+      Dir.mktmpdir('legion-sqlite-contention') do |dir|
+        @path = File.join(dir, 'contention.db')
+        example.run
+      ensure
+        @database&.disconnect
+      end
     ensure
-      @database&.disconnect
+      settings.merge!(original_settings)
+      Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
     end
-  ensure
-    settings.merge!(original_settings)
-    Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
   end
 
   def connect_database
@@ -53,17 +55,19 @@ RSpec.describe 'SQLite lock contention' do
     connect_database
     locked = Queue.new
     release = Queue.new
-    holder = Thread.new do
-      @database.transaction(mode: :immediate) do
-        @database[:items].insert
-        locked << true
-        release.pop
+    begin
+      holder = Thread.new do
+        @database.transaction(mode: :immediate) do
+          @database[:items].insert
+          locked << true
+          release.pop
+        end
       end
+      locked.pop
+      expect { @database[:items].insert }.to raise_error(Sequel::DatabaseError, /locked/)
+    ensure
+      release << true
+      holder&.value
     end
-    locked.pop
-    expect { @database[:items].insert }.to raise_error(Sequel::DatabaseError, /locked/)
-  ensure
-    release << true
-    holder&.value
   end
 end
