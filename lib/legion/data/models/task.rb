@@ -3,7 +3,6 @@
 require 'digest'
 require 'legion/json'
 require 'time'
-require 'legion/data/database_lock'
 
 module Legion
   module Data
@@ -28,25 +27,24 @@ module Legion
           Digest::SHA256.hexdigest(Legion::JSON.dump(canonical_payload(payload)))
         end
 
-        def self.find_active_by_idempotency_key(key, now: Time.now, lock: false)
+        def self.find_active_by_idempotency_key(key, now: Time.now)
           return nil if key.to_s.empty?
           return nil unless columns.include?(:idempotency_key)
 
-          matches = where(idempotency_key: key)
-                    .exclude(status: TERMINAL_STATUSES)
-                    .where { (idempotency_expires_at =~ nil) | (idempotency_expires_at > now) }
-                    .reverse_order(:created, :id)
-          matches = matches.for_update if lock
-          matches.first
+          where(idempotency_key: key)
+            .exclude(status: TERMINAL_STATUSES)
+            .where { (idempotency_expires_at =~ nil) | (idempotency_expires_at > now) }
+            .reverse_order(:created, :id)
+            .first
         end
 
         def self.create_idempotent(values, payload: nil, idempotency_key: nil, ttl: nil)
           key = idempotency_key || idempotency_key_for(payload || values)
-          Legion::Data::DatabaseLock.with_claim(database: db, table: :task_idempotency_claims,
-                                                key: { idempotency_key: key }) do
-            find_active_by_idempotency_key(key, lock: db.database_type != :sqlite) ||
-              create(values.merge(idempotency_key: key, idempotency_expires_at: ttl ? Time.now + ttl : nil))
-          end
+          existing = find_active_by_idempotency_key(key)
+          return existing if existing
+
+          expires_at = ttl ? Time.now + ttl : nil
+          create(values.merge(idempotency_key: key, idempotency_expires_at: expires_at))
         end
 
         def cancelled?

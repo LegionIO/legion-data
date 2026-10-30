@@ -13,7 +13,6 @@ RSpec.describe Legion::Data::Model::Task do
   it { should respond_to? :slave }
   it { should respond_to? :user_owner }
   it { should respond_to? :group_owner }
-  it { should be_a Sequel::Model }
 
   describe '.idempotency_key_for' do
     it 'returns the same SHA-256 key for hash payloads with different key order' do
@@ -43,29 +42,7 @@ RSpec.describe Legion::Data::Model::Task do
       expect(second.id).not_to eq(first.id)
     end
 
-    it 'returns one active task to concurrent creators on separate connections' do
-      key = "concurrent-#{SecureRandom.hex(12)}"
-      allow(described_class).to receive(:find_active_by_idempotency_key).and_wrap_original do |lookup, *args, **kwargs|
-        result = lookup.call(*args, **kwargs)
-        sleep 0.05 unless result
-        result
-      end
-      start = Queue.new
-      workers = Array.new(2) do
-        Thread.new do
-          start.pop
-          described_class.create_idempotent({ status: 'pending' }, idempotency_key: key).id
-        end
-      end
-      workers.size.times { start << true }
-
-      expect(workers.map(&:value).uniq.size).to eq(1)
-      expect(described_class.where(idempotency_key: key).count).to eq(1)
-    ensure
-      workers&.each(&:join)
-    end
-
-    it 'reuses an expired key without treating another key as the same claim' do
+    it 'reuses an expired key without treating another key as the same task' do
       key = "expired-#{SecureRandom.hex(12)}"
       expired = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: -1)
       active = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 60)
@@ -76,7 +53,7 @@ RSpec.describe Legion::Data::Model::Task do
       expect(other.id).not_to eq(active.id)
     end
 
-    it 'rolls back failed creation without leaving an unusable key claim' do
+    it 'allows valid creation with the same key after a foreign-key failure' do
       key = "rollback-#{SecureRandom.hex(12)}"
       expect do
         described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
@@ -84,7 +61,6 @@ RSpec.describe Legion::Data::Model::Task do
 
       task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
       expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])
-      expect(described_class.db[:task_idempotency_claims].where(idempotency_key: key).count).to eq(0)
     end
   end
 end

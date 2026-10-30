@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.28] - 2026-10-30
+
+### Changed
+- Remove the unmerged task-idempotency claim migration and restore the existing task creation API without database claims. The concurrent-creation fix for #77 is withdrawn from this PR (#84).
+- Renumber the unmerged append-claims migration from 139 to 138, leaving a contiguous migration sequence without adding a compensating migration. Migrations already on main are unchanged.
+
 ## [1.10.27] - 2026-10-30
 
 ### Fixed
@@ -38,13 +44,8 @@
 ## [1.10.21] - 2026-10-29
 
 ### Fixed
-- Serialize audit-chain and governance-stream appends with database claims, including first-entry races. Migration 139 adds scoped append claims; task creation shares the same transaction helper. MySQL uses exclusive duplicate-key locking rather than shared-lock upgrades (#78).
+- Serialize audit-chain and governance-stream appends with database claims, including first-entry races. Migration 138 adds scoped append claims. MySQL uses exclusive duplicate-key locking rather than shared-lock upgrades (#78).
 - Read locked tails on network adapters, retain database lock-timeout errors, and verify/walk audit records by append ID rather than writer-clock order. Unrelated insert failures roll back their claims and remain visible to callers.
-
-## [1.10.20] - 2026-10-29
-
-### Fixed
-- Serialize idempotent task creation with a transaction-scoped database key claim, including empty-keyspace races across processes. Migration 138 adds the unique claim table; claim rows are removed before commit while their database locks remain held. Terminal-status reuse, TTL expiry, and rollback preserve the existing API (#77).
 
 ## [1.10.19] - 2026-10-29
 
