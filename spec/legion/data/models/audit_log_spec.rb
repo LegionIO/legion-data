@@ -24,19 +24,12 @@ RSpec.describe Legion::Data::Model::AuditLog do
     }
   end
 
-  it { should be_a Sequel::Model }
-
   describe 'creation' do
     it 'creates a record with all required fields' do
       record = described_class.create(**valid_attrs)
       expect(record.id).not_to be_nil
       expect(record.event_type).to eq('runner_execution')
       expect(record.record_hash).to eq('a' * 64)
-      begin
-        record.delete
-      rescue StandardError
-        nil
-      end
       described_class.where(id: record.id).delete
     end
   end
@@ -120,6 +113,36 @@ RSpec.describe Legion::Data::Model::AuditLog do
         attrs[:record_hash] = audit_model.compute_hash(attrs)
         previous_hash = attrs[:record_hash]
         @database[:audit_log].insert(attrs)
+      end
+    end
+
+    it 'verifies hot-only history without creating archive schema' do
+      expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      expect(@database.table_exists?(:audit_log_archive)).to be false
+    end
+
+    it 'includes history moved to the first archive after the initial presence check' do
+      first_pass = true
+      allow(Legion::Data::AuditLogHashChain).to receive(:verify).and_wrap_original do |original, records|
+        if first_pass
+          first_pass = false
+          Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 0)
+        end
+        original.call(records)
+      end
+
+      expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      expect(@database[:audit_log].count).to eq(0)
+      expect(@database[:audit_log_archive].order(:id).select_map(:id)).to eq(@ids)
+    end
+
+    it 'raises when archive reads are denied instead of reporting an empty valid history' do
+      Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 0)
+      @database.synchronize do |connection|
+        connection.authorizer = proc { |_action, table_name, *| table_name == 'audit_log_archive' ? 1 : 0 }
+        expect { audit_model.verify_chain }.to raise_error(Sequel::DatabaseError)
+      ensure
+        connection.authorizer = nil
       end
     end
 

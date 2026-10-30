@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.27] - 2026-10-30
+
+### Fixed
+- Remove unmerged migration 140 rather than conditionally taking ownership of a runtime-created archive. Verification handles hot-only history without creating schema and rechecks for an archive created during the first verification pass (#79, #84).
+- Preserve database errors other than a genuinely missing archive, including permission failures. Existing hot/warm verification remains a single ordered statement; migrations already on main are unchanged.
+
 ## [1.10.26] - 2026-10-29
 
 ### Fixed
@@ -28,7 +34,6 @@
 
 ### Fixed
 - Verify the audit log across retained hot and warm rows in one ordered database statement, preserving genesis, predecessor, content-hash, and duplicate detection after repeated retention boundaries. Explicit record collections remain strictly verified as supplied; verification counts consumed rows without building an additional result array (#79).
-- Migration 140 creates a missing audit archive before first use and preserves existing archives. Automatic reversal is refused to avoid deleting retained audit history.
 
 ## [1.10.21] - 2026-10-29
 

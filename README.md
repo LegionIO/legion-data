@@ -251,11 +251,11 @@ Outside a caller-owned transaction, each batch commits independently. A later fa
 
 ### Audit Verification After Retention
 
-`Legion::Data::Model::AuditLog.verify_chain` verifies hot `audit_log` rows together with retained `audit_log_archive` rows in one ordered SQL statement. Moving records between these tables does not discard their predecessors or create a mixed-snapshot boundary. Archived content is rehashed; missing predecessors, modified content, and duplicate copies remain verification failures.
+`Legion::Data::Model::AuditLog.verify_chain` verifies hot `audit_log` rows together with retained `audit_log_archive` rows in one ordered SQL statement when the archive exists. Moving records between these tables does not discard their predecessors or create a mixed-snapshot boundary. Archived content is rehashed; missing predecessors, modified content, and duplicate copies remain verification failures.
 
 Passing an explicit record collection still verifies exactly that collection from genesis. Cold storage and purged history are not silently trusted: missing archived predecessors remain invalid until the complete history is supplied. This does not change LegionIO's separate tier-verification API.
 
-Migration 140 creates the warm audit table when absent and leaves an existing archive intact. Its downgrade deliberately refuses to remove retained audit history.
+Before the first retention run, verification reads hot-only history without creating archive schema. It checks again afterward for concurrent archive creation and, if the archive appeared, verifies both tables together. Only an actual missing-table error means the archive is absent; permission, connection, and other database failures propagate.
 
 ### Filesystem Spool (Write Buffer)
 
