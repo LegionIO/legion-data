@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.17 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.18 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -414,6 +414,12 @@ Enable `data.query_log` (or `data.local.query_log`) to write SQL to a dedicated 
 ```
 
 Replica URLs initialize a sharded pool at startup. URL-specific options override primary connection options; omitted credentials and session timeouts are inherited. Duplicate URLs are registered once as `read_0`, `read_1`, and so on. Reads remain on the primary unless explicitly routed, for example `dataset.server(Legion::Data::Connection.read_server)`. With no replicas configured, `read_server` returns `:default`.
+
+### Task Database Archival
+
+`Archival.archive_completed_tasks` and task-policy archival retain every task field after migration 137. Copy/delete and restore are atomic; only copied task IDs are deleted. A task referenced as a parent or master by another live task remains hot, so linked task trees archive from leaves upward across batches.
+
+Restore preserves original IDs and restores parent/master links after inserting the requested rows. Include archived ancestors in the same restore request or restore them first. Occupied IDs or missing referenced functions/relationships cause rollback and leave the archive intact. Fields already discarded by older archival versions cannot be reconstructed by this migration.
 
 ### Archive Objects
 

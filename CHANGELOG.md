@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.18] - 2026-10-29
+
+### Fixed
+- Preserve task payloads, arguments, results, identities, links, and timestamps through scheduled/policy archival and restore. Copy and delete exact locked row IDs atomically; keep parents referenced by live tasks hot and roll back restores on missing dependencies or occupied IDs (#75).
+- Add migration 137 for missing task archive columns; existing migrations are unchanged. PostgreSQL generated timestamps are excluded from restore inserts.
+
 ## [1.10.17] - 2026-10-29
 
 ### Fixed
