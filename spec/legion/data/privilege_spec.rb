@@ -91,6 +91,8 @@ RSpec.describe 'Legion::Data privilege checks' do
   end
 
   it 'cannot repopulate replacement permissions from an in-flight old connection' do
+    release = nil
+    previous_lookup = nil
     entered = Queue.new
     release = Queue.new
     use_database(Sequel.mock(host: 'postgres', fetch: lambda do |_sql|
@@ -107,7 +109,7 @@ RSpec.describe 'Legion::Data privilege checks' do
     expect(previous_lookup.value).to be true
     expect(Legion::Data.can_read?(:tasks)).to be false
   ensure
-    release << true
+    release << true if release
     previous_lookup&.join
   end
 

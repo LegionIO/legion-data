@@ -4,6 +4,7 @@
 
 ### Fixed
 - Exercise concurrent SQLite audit/event appends with the same cooperative busy handler used by production connections, avoiding native busy-wait starvation in Ruby 3.4 CI while retaining lock-timeout behavior (#78).
+- Initialize concurrency-spec cleanup state before resource setup and guard an absent release queue so early setup failures are not masked by cleanup errors (#84).
 
 ## [1.10.25] - 2026-10-29
 

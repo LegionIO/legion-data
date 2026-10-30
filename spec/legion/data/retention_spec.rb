@@ -204,9 +204,12 @@ RSpec.describe Legion::Data::Retention do
     end
 
     it 'lets independent processes archive each row once, including concurrent first use' do
+      workers = []
+      pending_pids = []
+      gate_reader = nil
+      gate_writer = nil
+      database = nil
       Dir.mktmpdir('legion-retention-spec') do |directory|
-        workers = []
-        pending_pids = []
         path = File.join(directory, 'retention.db')
         database = Sequel.sqlite(path, timeout: 5000)
         database.create_table(table) do
