@@ -205,8 +205,9 @@ module Legion
 
       def shutdown
         Legion::Data::Local.shutdown if defined?(Legion::Data::Local) && Legion::Data::Local.connected?
-        Legion::Data::Connection.shutdown
-        log.info 'Legion::Data shutdown complete'
+        closed = Legion::Data::Connection.shutdown
+        log.info 'Legion::Data shutdown complete' if closed
+        closed
       end
 
       private

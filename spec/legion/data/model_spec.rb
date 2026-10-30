@@ -4,7 +4,6 @@ require 'spec_helper'
 
 RSpec.describe Legion::Data::Models do
   after(:each) do
-    Legion::Data::Connection.shutdown
     Legion::Settings[:data][:models][:autoload] = true
     Legion::Settings[:data][:models][:continue_on_load_fail] = false
   end

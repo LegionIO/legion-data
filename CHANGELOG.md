@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.19] - 2026-10-29
+
+### Fixed
+- Drain database pools through tracked public checkout lifetimes across threaded and sharded pool implementations. Idle pools close immediately; shutdown returns false at its deadline while accepted work finishes, rejects new work, and closes connections and query logging only after the last checkout returns (#76).
+- Rebind loaded models and association caches to the current database on setup so a restart does not reopen a closed pool.
+
 ## [1.10.18] - 2026-10-29
 
 ### Fixed

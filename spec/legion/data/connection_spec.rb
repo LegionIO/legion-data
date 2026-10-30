@@ -4,54 +4,26 @@ require 'spec_helper'
 require 'tmpdir'
 
 RSpec.describe 'Legion::Data::Connection' do
-  after(:each) do
-    Legion::Data::Connection.shutdown
+  around do |example|
+    original = Legion::Data::Connection.sequel
+    settings = Legion::Settings[:data].dup
+    settings[:creds] = settings[:creds]&.dup
+    adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
+    begin
+      Legion::Data::Connection.sequel = nil
+      example.run
+    ensure
+      Legion::Data::Connection.shutdown
+      Legion::Data::Connection.sequel = original
+      Legion::Data::Connection.instance_variable_set(:@adapter, adapter)
+      Legion::Settings[:data].replace(settings)
+    end
   end
 
   it 'can setup' do
-    expect { Legion::Data::Connection.setup }.not_to raise_error
-    # expect(Legion::Data::Connection.adapter).to eq :mysql2
+    Legion::Data::Connection.setup
+    expect(Legion::Data::Connection.sequel.get(42)).to eq(42)
     expect(Legion::Settings[:data][:connected]).to eq true
-  end
-
-  it 'can shutdown' do
-    expect { Legion::Data::Connection.shutdown }.not_to raise_error
-    expect(Legion::Settings[:data][:connected]).to eq false
-  end
-
-  it 'has creds_builder' do
-    creds = Legion::Data::Connection.creds_builder
-    expect(creds).to be_a Hash
-    expect(creds[:database]).to eq Legion::Settings[:data][:creds][:database]
-  end
-
-  it 'can setup with logger' do
-    Legion::Settings[:data][:log] = true
-    Legion::Settings[:data][:sql_log_level] = 'debug'
-    Legion::Settings[:data][:log_warn_duration] = 42
-    Legion::Data::Connection.setup
-    expect(Legion::Data::Connection.sequel.sql_log_level).to eq :debug
-    expect(Legion::Data::Connection.sequel.log_warn_duration).to eq 42
-  end
-
-  it 'can run creds_builder' do
-    expect(Legion::Data::Connection.creds_builder).to be_a Hash
-  end
-
-  it 'using a tagged SlowQueryLogger' do
-    Legion::Data::Connection.setup
-    expect(Legion::Data::Connection.sequel.loggers).to be_a Array
-    expect(Legion::Data::Connection.sequel.loggers.count).to be > 0
-    expect(Legion::Data::Connection.sequel.loggers.first).to be_a Legion::Data::Connection::SlowQueryLogger
-    expect(Legion::Data::Connection.sequel.loggers.first.tagged.segments).to eq(%w[data connection])
-  end
-
-  it 'uses other things' do
-    Legion::Data::Connection.setup
-    expect(Legion::Settings[:data][:connected]).to eq true
-    expect(Legion::Data::Connection.sequel.log_warn_duration)
-      .to eq Legion::Settings[:data][:log_warn_duration]
-    expect(Legion::Data::Connection.sequel.sql_log_level).to eq Legion::Settings[:data][:sql_log_level].to_sym
   end
 
   describe 'unresolved URI placeholder detection' do

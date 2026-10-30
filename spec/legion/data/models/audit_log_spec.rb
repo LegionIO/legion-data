@@ -5,10 +5,6 @@ Legion::Data::Connection.setup
 Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::AuditLog do
-  after(:all) do
-    Legion::Data::Connection.shutdown
-  end
-
   let(:valid_attrs) do
     {
       event_type:     'runner_execution',

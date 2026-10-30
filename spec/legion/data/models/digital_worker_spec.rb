@@ -6,10 +6,6 @@ Legion::Data::Connection.setup
 Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::DigitalWorker do
-  after(:all) do
-    Legion::Data::Connection.shutdown
-  end
-
   let(:valid_attrs) do
     {
       worker_id:       SecureRandom.uuid,

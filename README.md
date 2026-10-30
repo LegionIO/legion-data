@@ -73,7 +73,7 @@ Legion::Data (singleton module)
 │   ├── .connection_info  # Adapter, liveness, and fallback diagnostics
 │   ├── .fallback_active? # True when dev fallback moved a network DB to SQLite
 │   ├── .stats          # Pool metrics, tuning snapshot, adapter-specific DB stats
-│   └── .shutdown       # Disconnect and close query file logger
+│   └── .shutdown       # Drain accepted work; return true only after cleanup
 │
 ├── Migration           # Auto-migration system (97 numbered Sequel DSL migrations)
 │
@@ -150,6 +150,14 @@ Legion::Data::Connection.connection_info
 # Shut down both connections
 Legion::Data.shutdown
 ```
+
+### Graceful Database Shutdown
+
+`Legion::Data.shutdown` returns `true` when the shared pool has drained and its connections and query logger are closed. An idle pool closes immediately. Once shutdown starts, new checkouts are rejected; work already accepted by the pool may finish, including nested checkouts in the same execution context.
+
+If `shutdown_timeout` expires, shutdown returns `false` rather than claiming active connections were forcibly closed. The last accepted checkout performs deferred cleanup. `Connection.connection_info[:shutdown]` reports `state` (`open`, `draining`, `closing`, `closed`, or `failed`) and `active_requests`, which counts accepted execution contexts, including pool waiters—not physical connections. A cleanup failure is logged and can be retried by calling shutdown again.
+
+Shutdown does not cancel SQL, kill worker threads, or close borrowed connections. Configure database statement timeouts separately to bound query execution. To resume work after completed shutdown, call `Legion::Data.setup`; it creates a new pool and rebinds loaded models.
 
 ### Model Associations
 

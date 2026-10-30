@@ -2,6 +2,7 @@
 
 require 'legion/logging/helper'
 require 'legion/data/auth_failure_handler'
+require 'legion/data/connection_pool'
 
 require 'fileutils'
 require 'sequel'
@@ -165,7 +166,15 @@ module Legion
       class << self
         include Legion::Logging::Helper
 
-        attr_accessor :sequel
+        attr_reader :sequel
+
+        def sequel=(database)
+          if database
+            pool = database.pool
+            pool.extend(Legion::Data::ConnectionPool) unless pool.is_a?(Legion::Data::ConnectionPool)
+          end
+          @sequel = database
+        end
 
         def adapter
           @adapter ||= Legion::Settings[:data][:adapter]&.to_sym || :sqlite
@@ -180,28 +189,28 @@ module Legion
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
           @fallback_active = false
           @replica_servers = []
-          @sequel = if adapter == :sqlite
-                      ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
-                    else
-                      attempted_adapter = adapter
-                      begin
-                        ::Sequel.connect(connection_opts_for(adapter: attempted_adapter, opts: opts))
-                      rescue UnresolvedCredentialError => e
-                        handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
-                        raise
-                      rescue ::Sequel::DatabaseConnectionError => e
-                        raise unless dev_fallback?
+          self.sequel = if adapter == :sqlite
+                          ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
+                        else
+                          attempted_adapter = adapter
+                          begin
+                            ::Sequel.connect(connection_opts_for(adapter: attempted_adapter, opts: opts))
+                          rescue UnresolvedCredentialError => e
+                            handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
+                            raise
+                          rescue ::Sequel::DatabaseConnectionError => e
+                            raise unless dev_fallback?
 
-                        log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
-                        log.error("Legion::Data WARNING: Data written to SQLite will NOT be visible when #{attempted_adapter} reconnects. " \
-                                  'Apollo knowledge, audit logs, and other DB-backed services will use a local-only store.')
-                        handle_exception(e, level: :error, handled: true, operation: :shared_connect, fallback: :sqlite)
-                        @adapter = :sqlite
-                        @fallback_active = true
-                        sqlite_opts = sequel_opts
-                        ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
-                      end
-                    end
+                            log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
+                            log.error("Legion::Data WARNING: Data written to SQLite will NOT be visible when #{attempted_adapter} reconnects. " \
+                                      'Apollo knowledge, audit logs, and other DB-backed services will use a local-only store.')
+                            handle_exception(e, level: :error, handled: true, operation: :shared_connect, fallback: :sqlite)
+                            @adapter = :sqlite
+                            @fallback_active = true
+                            sqlite_opts = sequel_opts
+                            ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
+                          end
+                        end
           @replica_servers = @sequel.opts.fetch(:servers, {}).keys
           log_connection_info
           configure_extensions
@@ -221,6 +230,7 @@ module Legion
             connected:          Legion::Settings[:data][:connected],
             fallback_active:    @fallback_active || false,
             configured_adapter: Legion::Settings[:data][:adapter]&.to_sym || :sqlite,
+            shutdown:           @sequel&.pool&.shutdown_status,
             sequel_alive:       (begin
               !@sequel&.test_connection.nil?
             rescue StandardError => e
@@ -287,16 +297,26 @@ module Legion
         end
 
         def shutdown
-          if @sequel
-            timeout = Legion::Settings[:data][:shutdown_timeout]
-            force_disconnect_pool(timeout: timeout)
+          database = @sequel
+          logger = @query_file_logger
+          on_closed = proc do
+            logger&.close
+            if @sequel.equal?(database)
+              @query_file_logger = nil
+              @fallback_active = false
+              @replica_servers = []
+              Legion::Settings[:data][:connected] = false
+            end
+            log.info 'Legion::Data connection closed'
           end
-          @query_file_logger&.close
-          @query_file_logger = nil
-          @fallback_active = false
-          @replica_servers = []
-          Legion::Settings[:data][:connected] = false
-          log.info 'Legion::Data connection closed'
+          unless database
+            on_closed.call
+            return true
+          end
+
+          closed = database.pool.shutdown(timeout: Legion::Settings[:data][:shutdown_timeout], &on_closed)
+          log.warn("Legion::Data shutdown incomplete: #{database.pool.shutdown_status}") unless closed
+          closed
         end
 
         def reconnect_with_fresh_creds
@@ -439,28 +459,6 @@ module Legion
         def dev_fallback?
           data_settings = Legion::Settings[:data]
           data_settings[:dev_mode] == true && data_settings[:dev_fallback] != false
-        end
-
-        def force_disconnect_pool(timeout:)
-          pool = @sequel.pool
-          in_use = pool.size - (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
-
-          if in_use.positive?
-            log.warn("Legion::Data shutdown: #{in_use} connection(s) still checked out, waiting up to #{timeout}s")
-            deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + timeout
-            while ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) < deadline
-              break if pool.size <= (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
-
-              sleep 0.1
-            end
-            remaining = pool.size - (pool.respond_to?(:available_connections) ? pool.available_connections.size : 0)
-            log.warn("Legion::Data shutdown: force-disconnecting #{remaining} wedged connection(s)") if remaining.positive?
-          end
-
-          @sequel.disconnect
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :force_disconnect_pool)
-          @sequel&.disconnect rescue nil # rubocop:disable Style/RescueModifier
         end
 
         def sqlite_path
