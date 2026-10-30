@@ -229,6 +229,8 @@ task = Legion::Data::Model::Task.create_idempotent(
 )
 ```
 
+Migration 138 makes nonempty-key creation atomic across processes and nodes using a unique database claim inside the task transaction. Concurrent callers receive the winning active task. Terminal tasks and expired TTLs allow a replacement; failed inserts roll back their claims. Claim rows are deleted within the transaction, so they do not accumulate as tasks are retained or archived. PostgreSQL/MySQL lock matching rows for current reads; SQLite uses an immediate write transaction.
+
 ### Filesystem Spool (Write Buffer)
 
 When the database is unavailable, `Legion::Data::Spool` buffers writes to `~/.legionio/data/spool/` and replays once the connection is restored:

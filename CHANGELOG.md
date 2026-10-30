@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.20] - 2026-10-29
+
+### Fixed
+- Serialize idempotent task creation with a transaction-scoped database key claim, including empty-keyspace races across processes. Migration 138 adds the unique claim table; claim rows are removed before commit while their database locks remain held. Terminal-status reuse, TTL expiry, and rollback preserve the existing API (#77).
+
 ## [1.10.19] - 2026-10-29
 
 ### Fixed
