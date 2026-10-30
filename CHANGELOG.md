@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.10.26] - 2026-10-29
+
+### Fixed
+- Exercise concurrent SQLite audit/event appends with the same cooperative busy handler used by production connections, avoiding native busy-wait starvation in Ruby 3.4 CI while retaining lock-timeout behavior (#78).
+
 ## [1.10.25] - 2026-10-29
 
 ### Fixed

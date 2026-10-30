@@ -8,7 +8,11 @@ require 'legion/data/event_store'
 RSpec.describe 'Concurrent database appends' do
   around do |example|
     Dir.mktmpdir('legion-appends') do |directory|
-      @database = Sequel.sqlite(File.join(directory, 'appends.db'), max_connections: 4, timeout: 10_000)
+      options = { max_connections: 4, timeout: 10_000 }
+      options[:after_connect] = proc do |connection|
+        Legion::Data::Connection.configure_sqlite_busy_handler(connection: connection, timeout: options[:timeout])
+      end
+      @database = Sequel.sqlite(File.join(directory, 'appends.db'), **options)
       Sequel::Migrator.run(@database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
       example.run
     ensure
