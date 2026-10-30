@@ -11,6 +11,7 @@ module Legion
 
         VALID_EVENT_TYPES = %w[runner_execution lifecycle_transition].freeze
         VALID_STATUSES    = %w[success failure denied].freeze
+        HASH_CHAIN_COLUMNS = [:id, :record_hash, *Legion::Data::AuditLogHashChain::CANONICAL_FIELDS].freeze
 
         def validate
           super
@@ -39,8 +40,12 @@ module Legion
           Legion::Data::AuditLogHashChain.compute_hash(record)
         end
 
-        def self.verify_chain(records = order(:created_at, :id).all)
-          Legion::Data::AuditLogHashChain.verify(records)
+        def self.verify_chain(records = nil)
+          return Legion::Data::AuditLogHashChain.verify(records) unless records.nil?
+
+          hot = dataset.naked.select(*HASH_CHAIN_COLUMNS)
+          warm = db[:audit_log_archive].select(*HASH_CHAIN_COLUMNS)
+          Legion::Data::AuditLogHashChain.verify(hot.union(warm, all: true).order(:created_at, :id))
         end
       end
     end

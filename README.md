@@ -237,6 +237,14 @@ After migration 139, `AuditRecord.append` serializes each chain and `EventStore.
 
 Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
 
+### Audit Verification After Retention
+
+`Legion::Data::Model::AuditLog.verify_chain` verifies hot `audit_log` rows together with retained `audit_log_archive` rows in one ordered SQL statement. Moving records between these tables does not discard their predecessors or create a mixed-snapshot boundary. Archived content is rehashed; missing predecessors, modified content, and duplicate copies remain verification failures.
+
+Passing an explicit record collection still verifies exactly that collection from genesis. Cold storage and purged history are not silently trusted: missing archived predecessors remain invalid until the complete history is supplied. This does not change LegionIO's separate tier-verification API.
+
+Migration 140 creates the warm audit table when absent and leaves an existing archive intact. Its downgrade deliberately refuses to remove retained audit history.
+
 ### Filesystem Spool (Write Buffer)
 
 When the database is unavailable, `Legion::Data::Spool` buffers writes to `~/.legionio/data/spool/` and replays once the connection is restored:

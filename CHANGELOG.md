@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.22] - 2026-10-29
+
+### Fixed
+- Verify the audit log across retained hot and warm rows in one ordered database statement, preserving genesis, predecessor, content-hash, and duplicate detection after repeated retention boundaries. Explicit record collections remain strictly verified as supplied; verification counts consumed rows without building an additional result array (#79).
+- Migration 140 creates a missing audit archive before first use and preserves existing archives. Automatic reversal is refused to avoid deleting retained audit history.
+
 ## [1.10.21] - 2026-10-29
 
 ### Fixed
