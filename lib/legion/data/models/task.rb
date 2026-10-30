@@ -3,6 +3,7 @@
 require 'digest'
 require 'legion/json'
 require 'time'
+require 'legion/data/database_lock'
 
 module Legion
   module Data
@@ -41,16 +42,10 @@ module Legion
 
         def self.create_idempotent(values, payload: nil, idempotency_key: nil, ttl: nil)
           key = idempotency_key || idempotency_key_for(payload || values)
-          options = { savepoint: true }
-          options[:mode] = :immediate if db.database_type == :sqlite
-          db.transaction(**options) do
-            claims = db[:task_idempotency_claims].where(idempotency_key: key)
-            claims.insert(idempotency_key: key)
-            task = find_active_by_idempotency_key(key, lock: db.database_type != :sqlite)
-            task ||= create(values.merge(idempotency_key: key, idempotency_expires_at: ttl ? Time.now + ttl : nil))
-            # Keep the unique-key lock until commit without retaining one row per historical payload.
-            claims.delete
-            task
+          Legion::Data::DatabaseLock.with_claim(database: db, table: :task_idempotency_claims,
+                                                key: { idempotency_key: key }) do
+            find_active_by_idempotency_key(key, lock: db.database_type != :sqlite) ||
+              create(values.merge(idempotency_key: key, idempotency_expires_at: ttl ? Time.now + ttl : nil))
           end
         end
 

@@ -2,6 +2,7 @@
 
 require 'legion/logging/helper'
 require 'digest'
+require 'legion/data/database_lock'
 
 module Legion
   module Data
@@ -21,11 +22,11 @@ module Legion
           return { error: 'db unavailable' } unless db_ready?
 
           conn = Legion::Data.connection
-          conn.transaction do
-            last = conn[:governance_events]
-                   .where(stream_id: stream)
-                   .order(Sequel.desc(:sequence_number))
-                   .first
+          Legion::Data::DatabaseLock.with_claim(database: conn, table: :append_claims,
+                                                key: { kind: 'event', stream_id: stream }) do
+            records = conn[:governance_events].where(stream_id: stream).order(Sequel.desc(:sequence_number))
+            records = records.for_update unless conn.database_type == :sqlite
+            last = records.first
 
             seq = (last&.[](:sequence_number) || 0) + 1
             prev_hash = last&.[](:event_hash) || ('0' * 64)

@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.10.21] - 2026-10-29
+
+### Fixed
+- Serialize audit-chain and governance-stream appends with database claims, including first-entry races. Migration 139 adds scoped append claims; task creation shares the same transaction helper. MySQL uses exclusive duplicate-key locking rather than shared-lock upgrades (#78).
+- Read locked tails on network adapters, retain database lock-timeout errors, and verify/walk audit records by append ID rather than writer-clock order. Unrelated insert failures roll back their claims and remain visible to callers.
+
 ## [1.10.20] - 2026-10-29
 
 ### Fixed

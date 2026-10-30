@@ -231,6 +231,12 @@ task = Legion::Data::Model::Task.create_idempotent(
 
 Migration 138 makes nonempty-key creation atomic across processes and nodes using a unique database claim inside the task transaction. Concurrent callers receive the winning active task. Terminal tasks and expired TTLs allow a replacement; failed inserts roll back their claims. Claim rows are deleted within the transaction, so they do not accumulate as tasks are retained or archived. PostgreSQL/MySQL lock matching rows for current reads; SQLite uses an immediate write transaction.
 
+### Serialized Audit and Governance Appends
+
+After migration 139, `AuditRecord.append` serializes each chain and `EventStore.append` serializes each stream with database-backed claims, including empty chains. Different audit/event namespaces remain independent. Claim rows do not accumulate after transactions finish; failed appends roll back both claim and record.
+
+Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
+
 ### Filesystem Spool (Write Buffer)
 
 When the database is unavailable, `Legion::Data::Spool` buffers writes to `~/.legionio/data/spool/` and replays once the connection is restored:
