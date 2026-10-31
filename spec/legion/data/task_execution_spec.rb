@@ -8,7 +8,8 @@ require 'legion/data/retention'
 require 'legion/data/archiver'
 
 RSpec.describe Legion::Data::TaskExecution do
-  include Legion::Settings::TaskExecution::Helper
+  include Legion::Data::TaskStatus::Helper
+  include Legion::Data::Settings::Helper
 
   before(:context) do
     @directory = Dir.mktmpdir('legion-task-execution')
@@ -45,11 +46,12 @@ RSpec.describe Legion::Data::TaskExecution do
   around do |example|
     original = Legion::Data::Connection.instance_variable_get(:@sequel)
     original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
-    original_settings = Legion::Settings[:task_execution]
+    original_loader = Legion::Settings.loader
+    original_settings = Legion::Settings[:data][:task_execution]
     begin
       Legion::Data::Connection.instance_variable_set(:@sequel, @database)
       Legion::Data::Connection.instance_variable_set(:@adapter, @database.database_type)
-      Legion::Settings.loader.settings[:task_execution] = Legion::Settings::TaskExecution.default
+      Legion::Settings[:data][:task_execution] = Legion::Data::Settings.task_execution
       @database[:task_dispatches].delete
       @database[:task_attempts].delete
       @database[:tasks_archive].delete
@@ -58,7 +60,8 @@ RSpec.describe Legion::Data::TaskExecution do
     ensure
       Legion::Data::Connection.instance_variable_set(:@sequel, original)
       Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
-      Legion::Settings.loader.settings[:task_execution] = original_settings
+      Legion::Settings.loader = original_loader
+      Legion::Settings[:data][:task_execution] = original_settings
     end
   end
 
@@ -73,6 +76,7 @@ RSpec.describe Legion::Data::TaskExecution do
       051_fix_tasks_created_at.rb
       075_add_task_idempotency.rb 137_preserve_task_archive_fields.rb 139_add_task_execution.rb
       140_create_task_attempts.rb 141_create_task_dispatches.rb 142_create_task_logs.rb 143_preserve_task_execution_archive_fields.rb
+      144_add_task_execution_policy.rb
     ]
     fixture_path = File.join(@directory, 'task_migrations')
     FileUtils.mkdir_p(fixture_path)
@@ -88,17 +92,17 @@ RSpec.describe Legion::Data::TaskExecution do
   end
 
   def dispatch_values(key: SecureRandom.uuid)
-    { event_key: key, message_type: task_execution_settings.fetch(:message_types).fetch(:task), options: { args: { item: 'one' } } }
+    { event_key: key, message_type: 'task', options: { args: { item: 'one' } } }
   end
 
   def concurrently(count:, &block)
     ready = Queue.new
     release = Queue.new
-    threads = Array.new(count) do
+    threads = Array.new(count) do |index|
       Thread.new do
         ready << true
         release.pop
-        yield
+        yield index
       end
     end
     count.times { ready.pop }
@@ -238,7 +242,7 @@ RSpec.describe Legion::Data::TaskExecution do
   end
 
   it 'records owned failed attempts and waits for configured backoff before a bounded retry' do
-    Legion::Settings[:task_execution][:retry][:max_attempts] = 2
+    Legion::Settings[:data][:task_execution][:retry][:max_attempts] = 2
     task = task_create
     first = described_class.claim_task(task_id: task[:id], owner: 'worker')
     failure = { success: false, status: task_status(name: :exception), error: 'safe failure' }
@@ -327,13 +331,94 @@ RSpec.describe Legion::Data::TaskExecution do
     end
   end
 
-  it 'honors configured status names rather than built-in string aliases' do
-    Legion::Settings[:task_execution][:statuses][:queued] = 'custom.waiting'
-    Legion::Settings[:task_execution][:statuses][:completed] = 'custom.done'
+  it 'ignores obsolete identity overrides when another loader completes persisted work' do
     task = task_create
-    expect(task[:status]).to eq('custom.waiting')
-    described_class.complete_task(task_id: task[:id], status: task_status(name: :completed), result: {})
+    claim = described_class.claim_task(task_id: task[:id], owner: 'first')
+    Legion::Settings.loader = Legion::Settings::Loader.new
+    Legion::Settings.loader.settings[:task_execution] = {
+      statuses: { completed: 'custom.done', running: 'custom.running' }, terminal_statuses: [],
+      outbox: { statuses: { delivered: 'custom.delivered' } }
+    }
+    completed = described_class.complete_task(task_id: task[:id], token: claim[:token], status: 'task.completed', result: {})
+    expect(completed[:changed]).to be(true)
     expect(described_class.claim_task(task_id: task[:id], owner: 'late')[:reason]).to eq(:terminal)
+    expect { task_create(status: 'custom.done') }.to raise_error(ArgumentError)
+    described_class.enqueue_dispatch(**dispatch_values)
+    dispatch = described_class.claim_dispatches(owner: 'relay').first
+    expect(described_class.ack_dispatch(dispatch_id: dispatch[:id], token: dispatch[:token])[:changed]).to be(true)
+    expect(@database[:task_dispatches].where(id: dispatch[:id]).get(:status)).to eq('delivered')
+  end
+
+  it 'uses the creation policy for claims, renewal, retry backoff and exhaustion across different loaders' do
+    local = Legion::Settings[:data][:task_execution]
+    local[:execution].merge!(lease_seconds: 90, heartbeat_seconds: 25)
+    local[:retry].merge!(max_attempts: 3, base_delay_seconds: 7, max_delay_seconds: 9)
+    task = task_create
+    Legion::Settings.loader = Legion::Settings::Loader.new
+    data_task_execution_settings[:execution].merge!(lease_seconds: 300, heartbeat_seconds: 100)
+    data_task_execution_settings[:retry].merge!(max_attempts: 1, base_delay_seconds: 40, max_delay_seconds: 80)
+    now = Time.now
+    claim = described_class.claim_task(task_id: task[:id], owner: 'different-node', now: now)
+    expect(claim[:policy]).to eq(execution: { lease_seconds: 90, heartbeat_seconds: 25 },
+                                 retry:     { max_attempts: 3, base_delay_seconds: 7, max_delay_seconds: 9 })
+    expect(claim[:task][:execution_lease_until]).to eq(now + 90)
+    renewal = described_class.renew_task_lease(task_id: task[:id], token: claim[:token], now: now + 20)
+    expect(renewal[:task][:execution_lease_until]).to eq(now + 110)
+    failure = { success: false, status: 'task.exception' }
+    allow(Time).to receive(:now).and_return(now + 21)
+    pending = described_class.complete_task(task_id: task[:id], token: claim[:token], status: 'task.retry_pending', result: failure)
+    expect(pending[:task][:retry_at]).to eq(now + 28)
+    expect(described_class.claim_task(task_id: task[:id], owner: 'early', now: now + 27)[:reason]).to eq(:not_due)
+    data_task_execution_settings[:retry][:max_attempts] = 100
+    second = described_class.claim_task(task_id: task[:id], owner: 'retry', now: now + 28)
+    expect(second[:policy]).to eq(claim[:policy])
+    allow(Time).to receive(:now).and_return(now + 29)
+    capped = described_class.complete_task(task_id: task[:id], token: second[:token], status: 'task.retry_pending', result: failure)
+    expect(capped[:task][:retry_at]).to eq(now + 38)
+    third = described_class.claim_task(task_id: task[:id], owner: 'last-retry', now: now + 38)
+    exhausted = described_class.complete_task(task_id: task[:id], token: third[:token], status: 'task.retry_pending', result: failure)
+    expect(exhausted[:task][:status]).to eq('task.failed')
+    expect(described_class.transition_task(task_id: task[:id], token: third[:token], status: 'task.retry_pending')[:reason]).to eq(:attempt_limit)
+  end
+
+  it 'captures one legacy first-claim policy atomically despite competing local overlays' do
+    id = @database[:tasks].insert(status: 'task.queued')
+    claims = concurrently(count: 8) do |index|
+      Legion::Settings.with_overlay(data: { task_execution: { execution: { lease_seconds: 60 + index } } }) do
+        described_class.claim_task(task_id: id, owner: "worker-#{index}")
+      end
+    end
+    winner = claims.select { |claim| claim[:claimed] }
+    expect(winner.size).to eq(1)
+    stored = Legion::JSON.load(@database[:tasks].where(id: id).get(:execution_policy))
+    expect(claims.map { |claim| claim[:policy] }.uniq).to eq([stored])
+    data_task_execution_settings[:execution][:lease_seconds] = 500
+    renewed_at = Time.now
+    renewal = described_class.renew_task_lease(task_id: id, token: winner.first[:token], now: renewed_at)
+    expect(renewal[:task][:execution_lease_until]).to eq(renewed_at + stored[:execution][:lease_seconds])
+    expect(@database[:task_attempts].where(task_id: id).count).to eq(1)
+  end
+
+  it 'protects policy against caller values and mutable claim results' do
+    expect { task_create(execution_policy: '{}') }.to raise_error(ArgumentError)
+    task = task_create
+    expect do
+      described_class.transition_task(task_id: task[:id], status: 'task.queued', values: { execution_policy: '{}' })
+    end.to raise_error(ArgumentError)
+    claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
+    expect { claim[:policy][:execution][:lease_seconds] = 1 }.to raise_error(FrozenError)
+  end
+
+  it 'registers replacement-loader defaults without resetting live connection state or local policy' do
+    Legion::Settings.loader = Legion::Settings::Loader.new
+    data_task_execution_settings
+    Legion::Settings[:data][:connected] = true
+    data_task_execution_settings[:execution][:lease_seconds] = 120
+    data_task_execution_settings
+    expect(Legion::Data.connected?).to be(true)
+    task = task_create
+    claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
+    expect(claim[:policy][:execution][:lease_seconds]).to eq(120)
   end
 
   it 'does not attach one dispatch identity to a different task' do
@@ -364,7 +449,7 @@ RSpec.describe Legion::Data::TaskExecution do
   it 'renews a live attempt through a long execution and preserves completion ownership' do
     task = task_create
     started = Time.now
-    lease = task_execution_settings.fetch(:execution).fetch(:lease_seconds)
+    lease = data_task_execution_settings.fetch(:execution).fetch(:lease_seconds)
     claim = described_class.claim_task(task_id: task[:id], owner: 'long-running', now: started)
     renewal = described_class.renew_task_lease(task_id: task[:id], token: claim[:token], now: started + lease - 1)
     expect(renewal[:renewed]).to be(true)
@@ -433,11 +518,11 @@ RSpec.describe Legion::Data::TaskExecution do
 
   it 'expires UTC execution and publication leases at the same absolute instant' do
     task = task_create
-    lease = task_execution_settings.fetch(:execution).fetch(:lease_seconds)
+    lease = data_task_execution_settings.fetch(:execution).fetch(:lease_seconds)
     described_class.claim_task(task_id: task[:id], owner: 'crashed', now: (Time.now - lease - 1).utc)
     expect(described_class.claim_task(task_id: task[:id], owner: 'replacement')[:reason]).to eq(:unknown)
     described_class.enqueue_dispatch(**dispatch_values)
-    outbox_lease = task_execution_settings.fetch(:outbox).fetch(:lease_seconds)
+    outbox_lease = data_task_execution_settings.fetch(:outbox).fetch(:lease_seconds)
     previous = described_class.claim_dispatches(owner: 'crashed-relay', now: (Time.now - outbox_lease - 1).utc).fetch(0)
     replacement = described_class.claim_dispatches(owner: 'replacement-relay').fetch(0)
     expect(replacement[:id]).to eq(previous[:id])
@@ -446,14 +531,18 @@ RSpec.describe Legion::Data::TaskExecution do
 
   it 'archives legacy rows while retaining durable execution identities and attempts' do
     old = Time.now - (10 * 86_400)
-    legacy_id = @database[:tasks].insert(status: 'completed', created: old)
+    legacy_id = @database[:tasks].insert(status: 'task.queued', created: old)
+    legacy_claim = described_class.claim_task(task_id: legacy_id, owner: 'legacy-worker')
+    described_class.complete_task(task_id: legacy_id, token: legacy_claim[:token], status: 'task.completed', result: {})
     task = task_create(key: 'retained-execution', created: old, idempotency_expires_at: old)
     claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
     described_class.complete_task(task_id: task[:id], token: claim[:token], status: task_status(name: :completed), result: { answer: 42 })
     policy = Legion::Data::Archival::Policy.new(tables: ['tasks'], warm_after_days: 1)
     expect(Legion::Data::Archival.archive!(policy: policy)).to eq(tasks: 1)
     expect(@database[:tasks].where(id: legacy_id).count).to eq(0)
-    expect(@database[:tasks_archive].where(original_id: legacy_id).first).to include(execution_key: nil, attempt_count: 0)
+    expect(@database[:tasks_archive].where(original_id: legacy_id).first).to include(execution_key: nil, attempt_count: 1)
+    archived_policy = @database[:tasks_archive].where(original_id: legacy_id).get(:execution_policy)
+    expect(Legion::JSON.load(archived_policy)).to eq(legacy_claim[:policy])
     expect(Legion::Data::Retention.archive_old_records(table: :tasks, archive_after_days: 1)[:archived]).to eq(0)
     Legion::Data::Archiver.archive_table(table: :tasks, retention_days: 1)
     expect(described_class.create_task(values: {}, idempotency_key: 'retained-execution')).to include(created: false)

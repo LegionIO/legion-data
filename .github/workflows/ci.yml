@@ -14,7 +14,7 @@ jobs:
       contents: read
     uses: LegionIO/.github/.github/workflows/ci.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
     with:
-      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"b5369f610ccd9aad7de1623e61fa06ac2089d9d1"}}' || '{}' }}
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}' || '{}' }}
 
   ci-postgres:
     name: "RSpec (PostgreSQL)"
@@ -42,7 +42,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: LegionIO/.github/actions/companion-gems@ef14bb68db4bc530509f5c31b1de364a5575a16b
         with:
-          repositories: '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"b5369f610ccd9aad7de1623e61fa06ac2089d9d1"}}'
+          repositories: '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}'
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
@@ -70,7 +70,7 @@ jobs:
       security-events: write
     uses: LegionIO/.github/.github/workflows/security-scan.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
     with:
-      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"b5369f610ccd9aad7de1623e61fa06ac2089d9d1"}}' || '{}' }}
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}' || '{}' }}
 
   version-changelog:
     permissions:

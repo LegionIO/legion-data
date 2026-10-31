@@ -3,7 +3,7 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Data::Model::Task do
-  include Legion::Settings::TaskExecution::Helper
+  include Legion::Data::TaskStatus::Helper
 
   around do |example|
     original = Legion::Data::Connection.instance_variable_get(:@sequel)
@@ -43,9 +43,9 @@ RSpec.describe Legion::Data::Model::Task do
     expect(described_class[task[:id]].terminal?).to be(true)
   end
 
-  it 'recognizes configured legacy terminal rows without re-creating their execution identity' do
+  it 'recognizes legacy terminal rows without re-creating their execution identity' do
     task = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
-    legacy = task_execution_settings.fetch(:legacy_terminal_statuses).first
+    legacy = Legion::Data::TaskStatus::LEGACY_TERMINAL_STATUSES.first
     described_class.where(id: task[:id]).update(status: legacy)
     expect(described_class[task[:id]].terminal?).to be(true)
     expect(described_class.find_active_by_idempotency_key(key: @execution_key)).to be_nil

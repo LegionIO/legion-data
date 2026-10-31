@@ -9,8 +9,9 @@ module Legion
   module Data
     module Model
       class Task < Sequel::Model
-        extend Legion::Settings::TaskExecution::Helper
-        include Legion::Settings::TaskExecution::Helper
+        extend Legion::Data::TaskStatus::Helper
+        include Legion::Data::TaskStatus::Helper
+        extend Legion::Data::Settings::Helper
 
         many_to_one :function
         many_to_one :relationship
@@ -40,7 +41,7 @@ module Legion
 
         def self.create_idempotent(values:, payload: nil, idempotency_key: nil, ttl: nil)
           key = idempotency_key || idempotency_key_for(payload: payload || values)
-          ttl ||= task_execution_settings.fetch(:execution).fetch(:idempotency_ttl_seconds)
+          ttl ||= data_task_execution_settings.fetch(:execution).fetch(:idempotency_ttl_seconds)
           attributes = values.merge(idempotency_expires_at: Time.now + ttl)
           Legion::Data::TaskExecution.create_task(values: attributes, idempotency_key: key).fetch(:task)
         end

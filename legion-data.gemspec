@@ -29,7 +29,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'csv', '>= 3.2'
   spec.add_dependency 'legion-json'
   spec.add_dependency 'legion-logging', '>= 1.5.0'
-  spec.add_dependency 'legion-settings', '>= 1.5.0'
+  spec.add_dependency 'legion-settings', '>= 1.4.3'
   spec.add_dependency 'sequel', '>= 5.70'
   spec.add_dependency 'sqlite3', '>= 2.0'
 end

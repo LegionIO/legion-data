@@ -5,32 +5,38 @@ require 'time'
 require 'sequel'
 require 'legion/json'
 require 'legion/logging/helper'
-require 'legion/settings/task_execution'
+require 'legion/data/settings'
+require 'legion/data/task_status'
 
 module Legion
   module Data
     module TaskExecution
       extend Legion::Logging::Helper
-      extend Legion::Settings::TaskExecution::Helper
+      extend Legion::Data::TaskStatus::Helper
+      extend Legion::Data::Settings::Helper
 
       JSON_COLUMNS = %i[function_args payload results transformation_result].freeze
-      OWNERSHIP_COLUMNS = %i[id execution_key execution_token execution_owner execution_lease_until attempt_count lock_version completed_at retry_at].freeze
+      OWNERSHIP_COLUMNS = %i[id execution_key execution_token execution_owner execution_lease_until execution_policy
+                             attempt_count lock_version completed_at retry_at].freeze
+      DISPATCH_STATUSES = { pending: 'pending', claimed: 'claimed', delivered: 'delivered', discarded: 'discarded' }.freeze
 
       class << self
         def create_task(values:, idempotency_key:, dispatch: nil)
           raise ArgumentError, 'idempotency_key must not be empty' if idempotency_key.to_s.empty?
           raise ArgumentError, 'task ownership is managed by TaskExecution' if values.keys.intersect?(OWNERSHIP_COLUMNS)
 
+          attributes = task_execution_encode(values: values)
+          attributes[:status] ||= task_status(name: :queued)
+          task_execution_validate_status(status: attributes[:status])
           db = Legion::Data.connection
           task_execution_transaction(db: db) do
-            attributes = task_execution_encode(values: values)
             attributes[:created] ||= Time.now
-            attributes[:status] ||= task_status(name: :queued)
-            task_execution_validate_status(status: attributes[:status])
             attributes[:completed_at] = Time.now if task_terminal_status?(status: attributes[:status])
             attributes[:cancelled_at] ||= Time.now if attributes[:status] == task_status(name: :cancelled)
             attributes[:execution_key] = idempotency_key
-            attributes[:idempotency_expires_at] ||= Time.now + task_execution_settings.fetch(:execution).fetch(:idempotency_ttl_seconds)
+            local_policy = data_task_execution_settings
+            attributes[:idempotency_expires_at] ||= Time.now + local_policy.fetch(:execution).fetch(:idempotency_ttl_seconds)
+            attributes[:execution_policy] = Legion::JSON.dump(task_execution_policy_snapshot(settings: local_policy))
             inserted = task_execution_insert_unique(db: db, table: :tasks, values: attributes, key: { execution_key: idempotency_key })
             task = inserted.fetch(:row)
             enqueue_dispatch(**dispatch, task_id: task.fetch(:id)) if inserted[:created] && dispatch
@@ -45,25 +51,23 @@ module Legion
           db = Legion::Data.connection
           task_execution_transaction(db: db) do
             task = task_execution_lock(db: db, task_id: task_id)
-            reason = task_execution_guard(db: db, task: task, now: now)
-            reason ||= :terminal if task_terminal_status?(status: task[:status])
-            reason ||= :leased if task[:execution_token] && task[:execution_lease_until]
-            reason ||= :not_due if task[:retry_at] && task[:retry_at] > now
-            reason ||= :not_due if task[:status] == task_status(name: :delayed)
-            next { claimed: false, task: task, token: nil, attempt_id: nil, reason: reason } if reason
+            reason = task_execution_claim_reason(db: db, task: task, now: now)
+            next { claimed: false, task: task, token: nil, attempt_id: nil, reason: reason, policy: task_execution_policy(task: task) } if reason
 
             token = SecureRandom.uuid
-            lease_until = now + task_execution_settings.fetch(:execution).fetch(:lease_seconds)
+            policy = task_execution_policy(task: task) || task_execution_policy_snapshot(settings: data_task_execution_settings)
+            lease_until = now + policy.fetch(:execution).fetch(:lease_seconds)
             number = task.fetch(:attempt_count) + 1
             changed = task_execution_update(db: db, task: task, values: {
                                               status: task_status(name: :running), execution_token: token, execution_owner: owner,
-                                              execution_lease_until: lease_until, attempt_count: number, retry_at: nil, completed_at: nil
+                                              execution_lease_until: lease_until, attempt_count: number, retry_at: nil, completed_at: nil,
+                                              execution_policy: task[:execution_policy] || Legion::JSON.dump(policy)
                                             })
-            next { claimed: false, task: task, token: nil, attempt_id: nil, reason: :conflict } unless changed
+            next { claimed: false, task: task, token: nil, attempt_id: nil, reason: :conflict, policy: task_execution_policy(task: task) } unless changed
 
             attempt_id = db[:task_attempts].insert(uuid: SecureRandom.uuid, task_id: task_id, number: number, token: token, owner: owner,
                                                    status: task_status(name: :running), lease_until: lease_until, created_at: now)
-            { claimed: true, task: task, token: token, attempt_id: attempt_id, reason: nil }
+            { claimed: true, task: task, token: token, attempt_id: attempt_id, reason: nil, policy: policy }
           end
         end
 
@@ -77,7 +81,7 @@ module Legion
               next { renewed: false, task: task }
             end
 
-            lease_until = now + task_execution_settings.fetch(:execution).fetch(:lease_seconds)
+            lease_until = now + task_execution_policy(task: task).fetch(:execution).fetch(:lease_seconds)
             changed = task_execution_update(db: db, task: task, values: { execution_lease_until: lease_until })
             if changed
               count = db[:task_attempts].where(task_id: task_id, token: token, finished_at: nil).update(lease_until: lease_until, updated_at: now)
@@ -147,7 +151,7 @@ module Legion
             inserted = task_execution_insert_unique(db: db, table: :task_dispatches, key: { event_key: event_key }, values: {
                                                       uuid: SecureRandom.uuid, event_key: event_key, message_type: message_type,
                                                      options: Legion::JSON.dump(envelope), task_id: task_id,
-                                                     status: task_execution_settings.fetch(:outbox).fetch(:statuses).fetch(:pending)
+                                                     status: DISPATCH_STATUSES.fetch(:pending)
                                                     })
             row = inserted.fetch(:row)
             raise ArgumentError, 'event_key already belongs to another dispatch identity' if row[:task_id] != task_id || row[:message_type] != message_type
@@ -175,7 +179,8 @@ module Legion
         def claim_dispatches(owner:, limit: nil, now: Time.now)
           raise ArgumentError, 'owner must not be empty' if owner.to_s.empty?
 
-          limit ||= task_execution_settings.fetch(:outbox).fetch(:batch_size)
+          policy = data_task_execution_settings.fetch(:outbox)
+          limit ||= policy.fetch(:batch_size)
           raise ArgumentError, 'limit must be a positive Integer' unless limit.is_a?(Integer) && limit.positive?
 
           now = now.getlocal
@@ -187,9 +192,9 @@ module Legion
             candidates = candidates.for_update unless db.database_type == :sqlite
             candidates.all.filter_map do |row|
               token = SecureRandom.uuid
-              values = { token: token, owner: owner, lease_until: now + task_execution_settings.fetch(:outbox).fetch(:lease_seconds),
+              values = { token: token, owner: owner, lease_until: now + policy.fetch(:lease_seconds),
                          delivery_attempts: row.fetch(:delivery_attempts) + 1, updated_at: now,
-                         status: task_execution_settings.fetch(:outbox).fetch(:statuses).fetch(:claimed) }
+                         status: DISPATCH_STATUSES.fetch(:claimed) }
               next unless available.where(id: row.fetch(:id)).update(values) == 1
 
               task_execution_decode_dispatch(row: row.merge(values))
@@ -204,7 +209,7 @@ module Legion
           changed = Legion::Data.connection[:task_dispatches].where(id: dispatch_id, token: token, delivered_at: nil, discarded_at: nil)
                                 .where { lease_until > now }
                                 .update(delivered_at: now, token: nil, owner: nil, lease_until: nil, updated_at: now,
-                                        status: task_execution_settings.fetch(:outbox).fetch(:statuses).fetch(:delivered))
+                                        status: DISPATCH_STATUSES.fetch(:delivered))
           { changed: changed == 1 }
         end
 
@@ -213,7 +218,7 @@ module Legion
 
           changed = Legion::Data.connection[:task_dispatches].where(id: dispatch_id, token: token, delivered_at: nil, discarded_at: nil)
                                 .update(token: nil, owner: nil, lease_until: nil, last_error: error.to_s, updated_at: Time.now,
-                                        status: task_execution_settings.fetch(:outbox).fetch(:statuses).fetch(:pending))
+                                        status: DISPATCH_STATUSES.fetch(:pending))
           { changed: changed == 1 }
         end
 
@@ -227,13 +232,23 @@ module Legion
             changed = db[:task_dispatches].where(id: dispatch_id, token: token, delivered_at: nil, discarded_at: nil)
                                           .where { lease_until > now }
                                           .update(discarded_at: now, discard_reason: reason.to_s, token: nil, owner: nil, lease_until: nil, updated_at: now,
-                                                  status: task_execution_settings.fetch(:outbox).fetch(:statuses).fetch(:discarded)) == 1
+                                                  status: DISPATCH_STATUSES.fetch(:discarded)) == 1
             row = db[:task_dispatches].where(id: dispatch_id).first
             { changed: changed, dispatch: row ? task_execution_decode_dispatch(row: row) : {} }
           end
         end
 
         private
+
+        def task_execution_claim_reason(db:, task:, now:)
+          reason = task_execution_guard(db: db, task: task, now: now)
+          return reason if reason
+          return :terminal if task_terminal_status?(status: task[:status])
+          return :leased if task[:execution_token] && task[:execution_lease_until]
+          return :not_due if task[:retry_at] && task[:retry_at] > now
+
+          :not_due if task[:status] == task_status(name: :delayed)
+        end
 
         def task_execution_transition_reason(db:, task:, status:, expected_status:, token:)
           reason = task_execution_guard(db: db, task: task, now: Time.now)
@@ -258,7 +273,7 @@ module Legion
             end
 
             attempt_status = result.fetch(:status)
-            if task[:attempt_count] >= task_execution_settings.fetch(:retry).fetch(:max_attempts)
+            if task[:attempt_count] >= task_execution_policy(task: task).fetch(:retry).fetch(:max_attempts)
               status = task_status(name: :failed)
               retrying = false
             end
@@ -344,7 +359,7 @@ module Legion
         def task_execution_retry_reason(db:, task:, token:)
           return :owner_mismatch unless token && token == task[:execution_token]
           return :not_failed unless [task_status(name: :failed), task_status(name: :exception)].include?(task[:status])
-          return :attempt_limit if task[:attempt_count] >= task_execution_settings.fetch(:retry).fetch(:max_attempts)
+          return :attempt_limit if task[:attempt_count] >= task_execution_policy(task: task).fetch(:retry).fetch(:max_attempts)
           return :cancelled if task[:cancelled_at]
           return :deadline if task[:deadline_at] && task[:deadline_at] <= Time.now
 
@@ -353,9 +368,24 @@ module Legion
         end
 
         def task_execution_retry_values(task:)
-          policy = task_execution_settings.fetch(:retry)
+          policy = task_execution_policy(task: task).fetch(:retry)
           delay = [policy.fetch(:base_delay_seconds) * (2**(task[:attempt_count] - 1)), policy.fetch(:max_delay_seconds)].min
           { retry_at: Time.now + delay, completed_at: nil, execution_token: nil, execution_owner: nil, execution_lease_until: nil }
+        end
+
+        def task_execution_policy_snapshot(settings:)
+          {
+            execution: settings.fetch(:execution).slice(:lease_seconds, :heartbeat_seconds).freeze,
+            retry:     settings.fetch(:retry).slice(:max_attempts, :base_delay_seconds, :max_delay_seconds).freeze
+          }.freeze
+        end
+
+        def task_execution_policy(task:)
+          return unless task[:execution_policy]
+
+          policy = Legion::JSON.load(task.fetch(:execution_policy))
+          policy.each_value(&:freeze)
+          policy.freeze
         end
 
         def task_execution_encode(values:)
@@ -375,7 +405,7 @@ module Legion
         end
 
         def task_execution_validate_status(status:)
-          raise ArgumentError, "Unknown task status #{status.inspect}" unless task_execution_settings.fetch(:statuses).value?(status)
+          raise ArgumentError, "Unknown task status #{status.inspect}" unless Legion::Data::TaskStatus::STATUSES.value?(status)
         end
       end
     end

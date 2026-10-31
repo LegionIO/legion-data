@@ -8,9 +8,10 @@
 - Durable outbox claims, owner-checked acknowledgements, recoverable releases, and terminal discards distinguish accepted publication from undelivered or cancelled work.
 - Migration 142 provisions `task_logs` and registers its model, with generated UUIDs and retained log evidence when parent records are removed. Unsupported manually created tables fail safely without data loss and require operator reconciliation.
 - Migration 143 preserves execution fields in the task archive schema. Automatic archival retains canonical execution rows and their attempts; legacy task rows remain archivable. Idempotency TTL bounds active lookup, not durable identity retention.
+- Migration 144 adds server-owned `execution_policy` JSON text to tasks and task archives. Creation snapshots lease/heartbeat and retry bounds; legacy rows capture them atomically on first claim. Claims expose immutable decoded policy, and renewals/retries honor it across differently configured workers.
 
 ### Changed
-- Task statuses and execution/outbox policy use the shared `legion-settings >= 1.5.0` task execution helper.
+- Data owns immutable persisted task/dispatch statuses independently of Transport and Core. Local execution/outbox defaults live under `data.task_execution`, registered through the generic `legion-settings >= 1.4.3` library API without resetting live connection state. Persisted policy and absolute timestamps, not later worker settings, govern existing durable tasks.
 - Task idempotency model methods use keyword arguments and return plain hashes. Replays retain the original logical task even after terminal completion or TTL expiry; producers must use distinct keys for new occurrences.
 - Expired ambiguous attempts become terminal `unknown` outcomes instead of repeating potentially completed external effects. Completion and successful continuation intent commit together.
 - Normalize incoming UTC/offset `Time` values at the new persistence boundaries so deadlines, leases, delayed-task creation, and log event times retain their absolute instant under Sequel's default timezone behavior, without rewriting historical data.
