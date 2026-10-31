@@ -3,6 +3,9 @@
 require 'spec_helper'
 require 'tmpdir'
 require 'sequel/extensions/migration'
+require 'legion/data/archival'
+require 'legion/data/retention'
+require 'legion/data/archiver'
 
 RSpec.describe Legion::Data::TaskExecution do
   include Legion::Settings::TaskExecution::Helper
@@ -41,16 +44,20 @@ RSpec.describe Legion::Data::TaskExecution do
 
   around do |example|
     original = Legion::Data::Connection.instance_variable_get(:@sequel)
+    original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
     original_settings = Legion::Settings[:task_execution]
     begin
       Legion::Data::Connection.instance_variable_set(:@sequel, @database)
+      Legion::Data::Connection.instance_variable_set(:@adapter, @database.database_type)
       Legion::Settings.loader.settings[:task_execution] = Legion::Settings::TaskExecution.default
       @database[:task_dispatches].delete
       @database[:task_attempts].delete
+      @database[:tasks_archive].delete
       @database[:tasks].delete
       example.run
     ensure
       Legion::Data::Connection.instance_variable_set(:@sequel, original)
+      Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
       Legion::Settings.loader.settings[:task_execution] = original_settings
     end
   end
@@ -62,9 +69,10 @@ RSpec.describe Legion::Data::TaskExecution do
     @database.create_table(:identity_principals) { primary_key :id }
     @database.create_table(:identities) { primary_key :id }
     migrations = %w[
-      008_add_tasks.rb 031_add_task_depth.rb 032_add_task_cancelled_at.rb 033_add_task_delay.rb
-      075_add_task_idempotency.rb 137_add_task_execution.rb 138_create_task_attempts.rb 139_create_task_dispatches.rb
-      140_create_task_logs.rb
+      008_add_tasks.rb 021_add_archive_tables.rb 031_add_task_depth.rb 032_add_task_cancelled_at.rb 033_add_task_delay.rb
+      051_fix_tasks_created_at.rb
+      075_add_task_idempotency.rb 137_preserve_task_archive_fields.rb 139_add_task_execution.rb
+      140_create_task_attempts.rb 141_create_task_dispatches.rb 142_create_task_logs.rb 143_preserve_task_execution_archive_fields.rb
     ]
     fixture_path = File.join(@directory, 'task_migrations')
     FileUtils.mkdir_p(fixture_path)
@@ -402,7 +410,7 @@ RSpec.describe Legion::Data::TaskExecution do
     legacy = Sequel.sqlite(File.join(@directory, 'manual_logs.db'))
     begin
       migrations = File.expand_path('../../../lib/legion/data/migrations', __dir__)
-      Sequel::Migrator.run(legacy, migrations, target: 139)
+      Sequel::Migrator.run(legacy, migrations, target: 141)
       legacy.create_table(:task_logs) do
         primary_key :id
         String :entry
@@ -434,5 +442,22 @@ RSpec.describe Legion::Data::TaskExecution do
     replacement = described_class.claim_dispatches(owner: 'replacement-relay').fetch(0)
     expect(replacement[:id]).to eq(previous[:id])
     expect(replacement[:token]).not_to eq(previous[:token])
+  end
+
+  it 'archives legacy rows while retaining durable execution identities and attempts' do
+    old = Time.now - (10 * 86_400)
+    legacy_id = @database[:tasks].insert(status: 'completed', created: old)
+    task = task_create(key: 'retained-execution', created: old, idempotency_expires_at: old)
+    claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
+    described_class.complete_task(task_id: task[:id], token: claim[:token], status: task_status(name: :completed), result: { answer: 42 })
+    policy = Legion::Data::Archival::Policy.new(tables: ['tasks'], warm_after_days: 1)
+    expect(Legion::Data::Archival.archive!(policy: policy)).to eq(tasks: 1)
+    expect(@database[:tasks].where(id: legacy_id).count).to eq(0)
+    expect(@database[:tasks_archive].where(original_id: legacy_id).first).to include(execution_key: nil, attempt_count: 0)
+    expect(Legion::Data::Retention.archive_old_records(table: :tasks, archive_after_days: 1)[:archived]).to eq(0)
+    Legion::Data::Archiver.archive_table(table: :tasks, retention_days: 1)
+    expect(described_class.create_task(values: {}, idempotency_key: 'retained-execution')).to include(created: false)
+    expect(@database[:task_attempts].where(id: claim[:attempt_id]).get(:status)).to eq(task_status(name: :completed))
+    expect(@database[:tasks].where(id: task[:id]).get(:results)).to eq(Legion::JSON.dump({ answer: 42 }))
   end
 end

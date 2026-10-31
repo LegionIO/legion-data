@@ -65,4 +65,19 @@ RSpec.describe Legion::Data::Model::Task do
   ensure
     Legion::Data::Model::TaskLog.where(id: record.id).delete if record
   end
+
+  it 'allows the same execution key after an unrelated foreign-key failure' do
+    expect do
+      described_class.create_idempotent(values: { function_id: -1 }, idempotency_key: @execution_key)
+    end.to raise_error(Sequel::ForeignKeyConstraintViolation)
+    task = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
+    expect(described_class.where(execution_key: @execution_key).select_map(:id)).to eq([task[:id]])
+  end
+
+  it 'canonicalizes equivalent frozen instants without mutating caller timezone' do
+    local = Time.new(2026, 10, 30, 12, 0, 0, '+05:30').freeze
+    utc = local.getutc.freeze
+    expect(described_class.idempotency_key_for(payload: { at: local })).to eq(described_class.idempotency_key_for(payload: { at: utc }))
+    expect(local.utc_offset).to eq(19_800)
+  end
 end

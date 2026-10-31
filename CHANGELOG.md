@@ -4,15 +4,75 @@
 
 ### Added
 - Transactional `Legion::Data::TaskExecution` logical-task creation, renewable owned attempts, compare-and-set lifecycle transitions, bounded retries, task/parent cancellation and deadline checks, and durable dispatch intents.
-- Additive migrations 137–139 introduce nullable unique execution identities, task execution metadata, `task_attempts`, and `task_dispatches`. Historical duplicate idempotency keys remain valid.
+- Additive migrations 139–141 introduce nullable unique execution identities, task execution metadata, `task_attempts`, and `task_dispatches`. Historical duplicate idempotency keys remain valid.
 - Durable outbox claims, owner-checked acknowledgements, recoverable releases, and terminal discards distinguish accepted publication from undelivered or cancelled work.
-- Migration 140 provisions `task_logs` and registers its model, with generated UUIDs and retained log evidence when parent records are removed. Unsupported manually created tables fail safely without data loss and require operator reconciliation.
+- Migration 142 provisions `task_logs` and registers its model, with generated UUIDs and retained log evidence when parent records are removed. Unsupported manually created tables fail safely without data loss and require operator reconciliation.
+- Migration 143 preserves execution fields in the task archive schema. Automatic archival retains canonical execution rows and their attempts; legacy task rows remain archivable. Idempotency TTL bounds active lookup, not durable identity retention.
 
 ### Changed
 - Task statuses and execution/outbox policy use the shared `legion-settings >= 1.5.0` task execution helper.
 - Task idempotency model methods use keyword arguments and return plain hashes. Replays retain the original logical task even after terminal completion or TTL expiry; producers must use distinct keys for new occurrences.
 - Expired ambiguous attempts become terminal `unknown` outcomes instead of repeating potentially completed external effects. Completion and successful continuation intent commit together.
 - Normalize incoming UTC/offset `Time` values at the new persistence boundaries so deadlines, leases, delayed-task creation, and log event times retain their absolute instant under Sequel's default timezone behavior, without rewriting historical data.
+
+## [1.10.28] - 2026-10-30
+
+### Changed
+- Remove the unmerged task-idempotency claim migration and restore the existing task creation API without database claims. The concurrent-creation fix for #77 is withdrawn from this PR (#84).
+- Renumber the unmerged append-claims migration from 139 to 138, leaving a contiguous migration sequence without adding a compensating migration. Migrations already on main are unchanged.
+
+## [1.10.27] - 2026-10-30
+
+### Fixed
+- Remove unmerged migration 140 rather than conditionally taking ownership of a runtime-created archive. Verification handles hot-only history without creating schema and rechecks for an archive created during the first verification pass (#79, #84).
+- Preserve database errors other than a genuinely missing archive, including permission failures. Existing hot/warm verification remains a single ordered statement; migrations already on main are unchanged.
+
+## [1.10.26] - 2026-10-29
+
+### Fixed
+- Exercise concurrent SQLite audit/event appends with the same cooperative busy handler used by production connections, avoiding native busy-wait starvation in Ruby 3.4 CI while retaining lock-timeout behavior (#78).
+- Initialize concurrency-spec cleanup state before resource setup and guard an absent release queue so early setup failures are not masked by cleanup errors (#84).
+
+## [1.10.25] - 2026-10-29
+
+### Fixed
+- Archive generic retention backlogs in primary-key-ordered, bounded transactions. Copy locked rows and delete only their complete identities; verify deletion counts and roll back inconsistent batches. Independent workers cannot copy the same locked rows, and concurrent archive-table creation handles PostgreSQL catalog races (#82).
+- Add an optional positive `batch_size` (default 1000), require a declared source primary key, and support composite keys without exceeding SQLite predicate-depth limits. Completed batches survive later failures or process interruption; reruns move only remaining eligible records and report their aggregate count.
+
+## [1.10.24] - 2026-10-29
+
+### Fixed
+- Use the active adapter for privilege checks, including SQLite fallback. PostgreSQL uses native table privileges; MySQL uses nonmutating SELECT and EXPLAIN INSERT probes rather than PostgreSQL-only SQL. Failed queries return false without poisoning future checks (#81).
+- Cache successful privilege lookups per physical connection, invalidate on connection replacement and credential rotation, and prevent in-flight old sessions from overwriting replacement permissions.
+
+## [1.10.23] - 2026-10-29
+
+### Fixed
+- Claim spool entries with nonblocking cross-process file locks before reading, replaying, quarantining, or clearing them. Recheck descriptor identity after acquisition so an already-open deleted file cannot replay again. Reads and clears skip in-flight entries (#80).
+- Preserve callback exceptions and pending events for retry; operating-system lock release recovers crashed owners without stale claim files. Delivery remains at least once if a process exits after its side effect but before deleting the event.
+
+## [1.10.22] - 2026-10-29
+
+### Fixed
+- Verify the audit log across retained hot and warm rows in one ordered database statement, preserving genesis, predecessor, content-hash, and duplicate detection after repeated retention boundaries. Explicit record collections remain strictly verified as supplied; verification counts consumed rows without building an additional result array (#79).
+
+## [1.10.21] - 2026-10-29
+
+### Fixed
+- Serialize audit-chain and governance-stream appends with database claims, including first-entry races. Migration 138 adds scoped append claims. MySQL uses exclusive duplicate-key locking rather than shared-lock upgrades (#78).
+- Read locked tails on network adapters, retain database lock-timeout errors, and verify/walk audit records by append ID rather than writer-clock order. Unrelated insert failures roll back their claims and remain visible to callers.
+
+## [1.10.19] - 2026-10-29
+
+### Fixed
+- Drain database pools through tracked public checkout lifetimes across threaded and sharded pool implementations. Idle pools close immediately; shutdown returns false at its deadline while accepted work finishes, rejects new work, and closes connections and query logging only after the last checkout returns (#76).
+- Rebind loaded models and association caches to the current database on setup so a restart does not reopen a closed pool.
+
+## [1.10.18] - 2026-10-29
+
+### Fixed
+- Preserve task payloads, arguments, results, identities, links, and timestamps through scheduled/policy archival and restore. Copy and delete exact locked row IDs atomically; keep parents referenced by live tasks hot and roll back restores on missing dependencies or occupied IDs (#75).
+- Add migration 137 for missing task archive columns; existing migrations are unchanged. PostgreSQL generated timestamps are excluded from restore inserts.
 
 ## [1.10.17] - 2026-10-29
 

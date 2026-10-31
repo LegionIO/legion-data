@@ -62,9 +62,9 @@ module Legion
           when Array
             value.map { |item| canonical_payload(item) }
           when Time
-            value.utc.iso8601(6)
+            value.getutc.iso8601(6)
           when DateTime
-            value.to_time.utc.iso8601(6)
+            value.to_time.getutc.iso8601(6)
           else
             value
           end

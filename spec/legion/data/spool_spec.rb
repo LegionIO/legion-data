@@ -194,14 +194,16 @@ RSpec.describe Legion::Data::Spool::ScopedSpool do
       expect(spool.count(sub_ns)).to eq(0)
     end
 
-    it 'keeps the file when the block raises' do
+    it 'preserves callback errors and leaves the event available for retry' do
       spool.write(sub_ns, a: 1)
-      begin
-        spool.flush(sub_ns) { |_e| raise 'oops' }
-      rescue RuntimeError
-        nil
-      end
-      expect(spool.count(sub_ns)).to eq(1)
+      expect do
+        spool.flush(sub_ns) { |_event| raise Errno::ENOENT, 'callback dependency missing' }
+      end.to raise_error(Errno::ENOENT)
+
+      expect(spool.read(sub_ns)).to eq([{ a: 1 }])
+      replayed = []
+      expect(spool.flush(sub_ns) { |event| replayed << event }).to eq(1)
+      expect(replayed).to eq([{ a: 1 }])
     end
 
     it 'returns the number of successfully processed events' do
@@ -233,6 +235,56 @@ RSpec.describe Legion::Data::Spool::ScopedSpool do
       expect(result).to eq(2)
       expect(spool.count(sub_ns)).to eq(0)
       expect(Dir[File.join(quarantine_dir, '*.corrupt')].size).to eq(1)
+    end
+
+    it 'prevents another instance from replaying or clearing an in-flight event' do
+      spool.write(sub_ns, a: 1)
+      other = described_class.new(Legion::Extensions::LLM::Gateway, tmpdir)
+      entered = Queue.new
+      release = Queue.new
+      worker = nil
+      begin
+        worker = Thread.new do
+          spool.flush(sub_ns) do |event|
+            entered << event
+            release.pop
+          end
+        end
+        expect(entered.pop).to eq(a: 1)
+        duplicate = []
+        expect(other.flush(sub_ns) { |event| duplicate << event }).to eq(0)
+        expect(duplicate).to be_empty
+        expect(other.read(sub_ns)).to be_empty
+        other.clear(sub_ns)
+        expect(other.count(sub_ns)).to eq(1)
+
+        release << true
+        expect(worker.value).to eq(1)
+        expect(other.count(sub_ns)).to eq(0)
+      ensure
+        release << true
+        worker&.join
+      end
+    end
+
+    it 'recovers an abruptly exited owner with at-least-once delivery' do
+      spool.write(sub_ns, a: 1)
+      effects = File.join(tmpdir, 'effects.log')
+      pid = Process.fork do
+        spool.flush(sub_ns) do |event|
+          File.write(effects, "#{event[:a]}\n", mode: 'a')
+          Process.exit!(42)
+        end
+        Process.exit!(43)
+      end
+      status = Process.wait2(pid).last
+      expect(status.exitstatus).to eq(42)
+      expect(spool.count(sub_ns)).to eq(1)
+
+      other = described_class.new(Legion::Extensions::LLM::Gateway, tmpdir)
+      expect(other.flush(sub_ns) { |event| File.write(effects, "#{event[:a]}\n", mode: 'a') }).to eq(1)
+      expect(File.readlines(effects)).to eq(%W[1\n 1\n])
+      expect(other.count(sub_ns)).to eq(0)
     end
   end
 

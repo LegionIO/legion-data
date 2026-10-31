@@ -12,24 +12,37 @@ module Legion
       class << self
         include Legion::Logging::Helper
 
-        def archive_old_records(table:, date_column: nil, archive_after_days: DEFAULT_ARCHIVE_AFTER_DAYS)
+        def archive_old_records(table:, date_column: nil, archive_after_days: DEFAULT_ARCHIVE_AFTER_DAYS, batch_size: 1000)
           db = Legion::Data.connection
           return { archived: 0, table: table } unless db
+          raise ArgumentError, 'batch_size must be a positive Integer' unless batch_size.is_a?(Integer) && batch_size.positive?
 
           date_column = resolve_date_column(table, date_column)
           cutoff = Time.now - (archive_after_days * 86_400)
           archive_table = archive_table_name(table)
+          primary_keys = db.schema(table).filter_map { |name, info| name if info[:primary_key] }
+          raise Sequel::Error, "#{table} needs a primary key for bounded retention" if primary_keys.empty?
 
           ensure_archive_table!(db, table, archive_table)
 
           count = 0
-          db.transaction do
-            records = db[table].where(Sequel.identifier(date_column) < cutoff)
-            count = records.count
-            if count.positive?
-              db[archive_table].multi_insert(records.all)
-              records.delete
+          loop do
+            archived = db.transaction(savepoint: true, **(db.database_type == :sqlite ? { mode: :immediate } : {})) do
+              records = db[table].where(Sequel.identifier(date_column) < cutoff).order(*primary_keys).limit(batch_size)
+              records = records.where(execution_key: nil) if table.to_sym == :tasks
+              records = records.for_update unless db.database_type == :sqlite
+              rows = records.all
+              next 0 if rows.empty?
+
+              db[archive_table].multi_insert(rows)
+              deleted = delete_archived_rows(db: db, table: table, rows: rows, primary_keys: primary_keys)
+              raise Sequel::Error, "Retention copied #{rows.length} rows but deleted #{deleted} from #{table}" unless deleted == rows.length
+
+              deleted
             end
+            break if archived.zero?
+
+            count += archived
           end
 
           log.info "Archived #{count} row(s) from #{table}" if count.positive?
@@ -113,18 +126,37 @@ module Legion
           end
         end
 
+        def delete_archived_rows(db:, table:, rows:, primary_keys:)
+          if primary_keys.one?
+            key = primary_keys.first
+            return db[table].where(key => rows.map { |row| row.fetch(key) }).delete
+          end
+
+          # SQLite expands composite-key predicates into OR expressions with a depth limit.
+          identity_batch_size = db.database_type == :sqlite ? 100 : rows.length
+          rows.each_slice(identity_batch_size).sum do |batch|
+            db[table].where(primary_keys => batch.map { |row| row.values_at(*primary_keys) }).delete
+          end
+        end
+
         def ensure_archive_table!(db, source_table, archive_table)
           return if db.table_exists?(archive_table)
 
           source_schema = db.schema(source_table).to_h
 
           log.info "Creating archive table #{archive_table} from #{source_table}"
-          db.create_table(archive_table) do
-            source_schema.each do |col_name, col_info|
-              column col_name, col_info[:db_type]
+          db.transaction(savepoint: true) do
+            db.create_table?(archive_table) do
+              source_schema.each do |col_name, col_info|
+                column col_name, col_info[:db_type]
+              end
+              DateTime :archived_at, default: Sequel::CURRENT_TIMESTAMP
             end
-            DateTime :archived_at, default: Sequel::CURRENT_TIMESTAMP
           end
+        rescue Sequel::UniqueConstraintViolation => e
+          raise unless db.table_exists?(archive_table)
+
+          handle_exception(e, level: :debug, handled: true, operation: :concurrent_archive_creation, table: archive_table)
         end
       end
     end

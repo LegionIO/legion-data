@@ -10,6 +10,11 @@ module Legion
         tasks:            :tasks_archive,
         metering_records: :metering_records_archive
       }.freeze
+      COLUMN_MAP = { id: :original_id, created_at: :original_created_at, updated_at: :original_updated_at }.freeze
+      TASK_COLUMN_MAP = {
+        id: :original_id, created: :original_created_at, updated: :original_updated_at,
+        function_args: :args, results: :result
+      }.freeze
 
       class << self
         include Legion::Logging::Helper
@@ -42,17 +47,17 @@ module Legion
           return 0 unless archive_table && db_ready?(archive_table)
 
           conn = Legion::Data.connection
-          restored = 0
-          conn.transaction do
-            conn[archive_table].where(original_id: ids).each do |row|
-              restore_row = row.except(:id, :archived_at, :original_id, :original_created_at, :original_updated_at)
-              restore_row[:id] = row[:original_id]
-              restore_row[:created_at] = row[:original_created_at]
-              restore_row[:updated_at] = row[:original_updated_at]
-              conn[source_table].insert(restore_row)
-              restored += 1
+          restored = conn.transaction(savepoint: true, **(conn.database_type == :sqlite ? { mode: :immediate } : {})) do
+            dataset = conn[archive_table].where(original_id: ids).order(:original_id)
+            dataset = dataset.for_update unless conn.database_type == :sqlite
+            archived = dataset.all
+            rows = restore_row_values(conn: conn, source: source_table, archived: archived)
+            rows.each do |row|
+              conn[source_table].insert(source_table == :tasks ? row.merge(parent_id: nil, master_id: nil) : row)
             end
-            conn[archive_table].where(original_id: ids).delete
+            rows.each { |row| conn[:tasks].where(id: row[:id]).update(row.slice(:parent_id, :master_id)) } if source_table == :tasks
+            conn[archive_table].where(id: archived.map { |row| row[:id] }).delete
+            rows.size
           end
           log.info "Restored #{restored} row(s) from #{archive_table} -> #{source_table}"
           restored
@@ -82,30 +87,8 @@ module Legion
 
           return { archived: 0, cutoff: cutoff.iso8601 } unless conn&.table_exists?(:tasks) && conn.table_exists?(:tasks_archive)
 
-          candidates = conn[:tasks]
-                       .where(status: %w[completed failed])
-                       .where(Sequel.lit('created < ?', cutoff))
-                       .limit(batch_size)
-
-          count = candidates.count
-          if count.positive?
-            archive_cols = conn.schema(:tasks_archive).to_set(&:first)
-            conn.transaction do
-              candidates.each do |row|
-                archive_row = {
-                  original_id:         row[:id],
-                  status:              row[:status],
-                  relationship_id:     row[:relationship_id],
-                  original_created_at: row[:created],
-                  original_updated_at: row[:updated],
-                  archived_at:         Time.now
-                }
-                archive_row[:archive_reason] = 'completed_task_archival' if archive_cols.include?(:archive_reason)
-                conn[:tasks_archive].insert(archive_row)
-              end
-              conn[:tasks].where(id: candidates.select(:id)).delete
-            end
-          end
+          count = archive_table!(source: :tasks, destination: :tasks_archive, cutoff: cutoff,
+                                 batch_size: batch_size, dry_run: false, statuses: %w[completed failed])
 
           log.info "archive_completed_tasks: archived #{count} tasks (cutoff: #{cutoff.iso8601})"
           { archived: count, cutoff: cutoff.iso8601 }
@@ -135,24 +118,41 @@ module Legion
 
         private
 
-        def archive_table!(source:, destination:, cutoff:, batch_size:, dry_run:)
+        def archive_table!(source:, destination:, cutoff:, batch_size:, dry_run:, statuses: nil)
           conn = Legion::Data.connection
-          candidates = conn[source].where { created_at < cutoff }.limit(batch_size)
-          count = candidates.count
-          return count if dry_run || count.zero?
-
-          conn.transaction do
-            candidates.each do |row|
-              archive_row = row.dup
-              archive_row[:original_id] = archive_row.delete(:id)
-              archive_row[:original_created_at] = archive_row.delete(:created_at)
-              archive_row[:original_updated_at] = archive_row.delete(:updated_at)
-              archive_row[:archived_at] = Time.now
-              conn[destination].insert(archive_row)
-            end
-            conn[source].where(id: candidates.select(:id)).delete
+          date_column = Policy::DATE_COLUMN_OVERRIDES.fetch(source.to_s, :created_at)
+          candidates = conn[source].where(Sequel[date_column] < cutoff).order(:id).limit(batch_size)
+          candidates = candidates.where(status: statuses) if statuses
+          if source == :tasks
+            candidates = candidates.where(execution_key: nil)
+            references = conn.from(Sequel.as(:tasks, :dependent_tasks))
+                             .where(Sequel.|({ parent_id: Sequel[:tasks][:id] }, { master_id: Sequel[:tasks][:id] }))
+                             .exclude(id: Sequel[:tasks][:id]).exists
+            candidates = candidates.exclude(references)
           end
-          count
+          return candidates.count if dry_run
+
+          mapping = source == :tasks ? TASK_COLUMN_MAP : COLUMN_MAP
+          conn.transaction(savepoint: true, **(conn.database_type == :sqlite ? { mode: :immediate } : {})) do
+            locked = conn.database_type == :sqlite ? candidates : candidates.for_update
+            selected_ids = locked.select_map(:id)
+            selected = conn[source].where(id: selected_ids).order(:id)
+            selected = selected.where(execution_key: nil).exclude(references) if source == :tasks
+            selected = selected.for_update unless conn.database_type == :sqlite
+            rows = selected.all
+            rows.each do |row|
+              archive_row = row.to_h { |column, value| [mapping.fetch(column, column), value] }
+              conn[destination].insert(archive_row.merge(archived_at: Time.now))
+            end
+            conn[source].where(id: rows.map { |row| row[:id] }).delete
+            rows.size
+          end
+        end
+
+        def restore_row_values(conn:, source:, archived:)
+          mapping = source == :tasks ? TASK_COLUMN_MAP : COLUMN_MAP
+          columns = conn.schema(source).reject { |_, info| info[:generated] }.map(&:first)
+          archived.map { |row| columns.to_h { |column| [column, row[mapping.fetch(column, column)]] } }
         end
 
         def db_ready?(table)

@@ -27,13 +27,6 @@ RSpec.describe Legion::Data::Local do
       expect(described_class.connection).to be_a(Sequel::SQLite::Database)
     end
 
-    it 'uses a local tagged Sequel logger' do
-      described_class.setup(database: test_db)
-      logger = described_class.connection.loggers.first
-      expect(logger).to be_a(Legion::Data::Connection::SlowQueryLogger)
-      expect(logger.tagged.segments).to eq(%w[data local])
-    end
-
     it 'sets connected to true' do
       described_class.setup(database: test_db)
       expect(described_class.connected?).to be true

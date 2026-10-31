@@ -115,7 +115,9 @@ module Legion
         end
 
         def archive_batch(conn:, table:, cutoff:, batch_size:, now:, storage_backend:)
-          rows = conn[table].where { created_at < cutoff }.limit(batch_size).all
+          candidates = conn[table].where { created_at < cutoff }.limit(batch_size)
+          candidates = candidates.where(execution_key: nil) if table.to_sym == :tasks
+          rows = candidates.all
           return if rows.empty?
 
           batch_id = SecureRandom.uuid

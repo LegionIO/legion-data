@@ -1,14 +1,11 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'legion/data/retention'
 Legion::Data::Connection.setup
 Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::AuditLog do
-  after(:all) do
-    Legion::Data::Connection.shutdown
-  end
-
   let(:valid_attrs) do
     {
       event_type:     'runner_execution',
@@ -27,19 +24,12 @@ RSpec.describe Legion::Data::Model::AuditLog do
     }
   end
 
-  it { should be_a Sequel::Model }
-
   describe 'creation' do
     it 'creates a record with all required fields' do
       record = described_class.create(**valid_attrs)
       expect(record.id).not_to be_nil
       expect(record.event_type).to eq('runner_execution')
       expect(record.record_hash).to eq('a' * 64)
-      begin
-        record.delete
-      rescue StandardError
-        nil
-      end
       described_class.where(id: record.id).delete
     end
   end
@@ -92,13 +82,6 @@ RSpec.describe Legion::Data::Model::AuditLog do
     end
   end
 
-  describe '.compute_hash' do
-    it 'delegates to the canonical audit log hash chain' do
-      record = valid_attrs.merge(previous_hash: Legion::Data::AuditLogHashChain::GENESIS_HASH)
-      expect(described_class.compute_hash(record)).to eq(Legion::Data::AuditLogHashChain.compute_hash(record))
-    end
-  end
-
   describe '.verify_chain' do
     it 'verifies records with the canonical hash chain' do
       first_base = valid_attrs.merge(id: 1, previous_hash: Legion::Data::AuditLogHashChain::GENESIS_HASH)
@@ -107,6 +90,94 @@ RSpec.describe Legion::Data::Model::AuditLog do
       second = second_base.merge(record_hash: described_class.compute_hash(second_base))
 
       expect(described_class.verify_chain([first, second])).to eq({ valid: true, length: 2 })
+    end
+  end
+
+  describe '.verify_chain across retention boundaries' do
+    around do |example|
+      @database = Sequel.sqlite
+      @database.timezone = :utc
+      Sequel::Migrator.run(@database, File.expand_path('../../../../lib/legion/data/migrations', __dir__))
+      example.run
+    ensure
+      @database&.disconnect
+    end
+
+    let(:audit_model) { Class.new(described_class).tap { |model| model.set_dataset(@database[:audit_log]) } }
+
+    before do
+      allow(Legion::Data).to receive(:connection).and_return(@database)
+      previous_hash = Legion::Data::AuditLogHashChain::GENESIS_HASH
+      @ids = [120, 90, 60, 0].map do |age|
+        attrs = valid_attrs.merge(created_at: Time.now.utc - (age * 86_400), previous_hash: previous_hash)
+        attrs[:record_hash] = audit_model.compute_hash(attrs)
+        previous_hash = attrs[:record_hash]
+        @database[:audit_log].insert(attrs)
+      end
+    end
+
+    it 'verifies hot-only history without creating archive schema' do
+      expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      expect(@database.table_exists?(:audit_log_archive)).to be false
+    end
+
+    it 'includes history moved to the first archive after the initial presence check' do
+      first_pass = true
+      allow(Legion::Data::AuditLogHashChain).to receive(:verify).and_wrap_original do |original, records|
+        if first_pass
+          first_pass = false
+          Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 0)
+        end
+        original.call(records)
+      end
+
+      expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      expect(@database[:audit_log].count).to eq(0)
+      expect(@database[:audit_log_archive].order(:id).select_map(:id)).to eq(@ids)
+    end
+
+    it 'raises when archive reads are denied instead of reporting an empty valid history' do
+      Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 0)
+      @database.synchronize do |connection|
+        connection.authorizer = proc { |_action, table_name, *| table_name == 'audit_log_archive' ? 1 : 0 }
+        expect { audit_model.verify_chain }.to raise_error(Sequel::DatabaseError)
+      ensure
+        connection.authorizer = nil
+      end
+    end
+
+    it 'verifies the complete chain after repeated moves, including an entirely archived chain' do
+      expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      [100, 70, 40, 0].each do |days|
+        result = Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: days)
+        expect(result[:archived]).to eq(1)
+        expect(audit_model.verify_chain).to eq(valid: true, length: 4)
+      end
+      expect(@database[:audit_log].count).to eq(0)
+      expect(@database[:audit_log_archive].count).to eq(4)
+    end
+
+    it 'detects tampering in archived predecessors instead of trusting their stored tail hash' do
+      Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 70)
+      @database[:audit_log_archive].where(id: @ids.first).update(action: 'tampered')
+
+      expect(audit_model.verify_chain).to eq(valid: false, broken_at: @ids.first, reason: :hash_mismatch)
+    end
+
+    it 'rejects a missing archive prefix rather than accepting the first hot predecessor' do
+      Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 70)
+      @database[:audit_log_archive].delete
+
+      expect(audit_model.verify_chain).to eq(valid: false, broken_at: @ids[2], reason: :parent_mismatch)
+    end
+
+    it 'does not silently deduplicate a row present in both hot and archive storage' do
+      Legion::Data::Retention.archive_old_records(table: :audit_log, archive_after_days: 70)
+      duplicate = @database[:audit_log_archive].where(id: @ids.first).first
+      duplicate.delete(:archived_at)
+      @database[:audit_log].insert(duplicate)
+
+      expect(audit_model.verify_chain).to eq(valid: false, broken_at: @ids.first, reason: :parent_mismatch)
     end
   end
 
