@@ -2,6 +2,7 @@
 
 require 'legion/logging/helper'
 require 'digest'
+require 'legion/data/database_lock'
 
 module Legion
   module Data
@@ -23,7 +24,8 @@ module Legion
           return { error: 'db unavailable' } unless db_ready?
 
           conn = Legion::Data.connection
-          conn.transaction do
+          Legion::Data::DatabaseLock.with_claim(database: conn, table: :append_claims,
+                                                key: { kind: 'audit', stream_id: chain_id }) do
             parent_hash = latest_chain_hash(conn, chain_id)
             ts          = truncate_to_us(Time.now)
             ch          = compute_chain_hash(parent_hash, content_hash, ts, content_type)
@@ -46,7 +48,7 @@ module Legion
           end
         end
 
-        # Walk all records in the chain ordered by creation time and verify that
+        # Walk all records in append order and verify that
         # each record's stored chain_hash matches a freshly computed one.
         #
         # @param chain_id [String]
@@ -56,7 +58,7 @@ module Legion
 
           records = Legion::Data.connection[:audit_records]
                                 .where(chain_id: chain_id)
-                                .order(:created_at, :id)
+                                .order(:id)
                                 .all
 
           prev_hash = GENESIS_HASH
@@ -88,7 +90,7 @@ module Legion
 
           ds = Legion::Data.connection[:audit_records].where(chain_id: chain_id)
           ds = ds.where { created_at >= since } if since
-          ds.order(:created_at, :id).limit(limit).all.map { |r| deserialize(r) }
+          ds.order(:id).limit(limit).all.map { |r| deserialize(r) }
         end
 
         # Return records filtered by content_type across all chains.
@@ -136,11 +138,12 @@ module Legion
         end
 
         def latest_chain_hash(conn, chain_id)
-          last = conn[:audit_records]
-                 .select(:chain_hash)
-                 .where(chain_id: chain_id)
-                 .order(Sequel.desc(:created_at), Sequel.desc(:id))
-                 .first
+          records = conn[:audit_records]
+                    .select(:chain_hash)
+                    .where(chain_id: chain_id)
+                    .order(Sequel.desc(:id))
+          records = records.for_update unless conn.database_type == :sqlite
+          last = records.first
           last ? last[:chain_hash] : GENESIS_HASH
         end
 
