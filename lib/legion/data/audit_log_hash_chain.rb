@@ -19,6 +19,7 @@ module Legion
 
         def verify(records)
           previous_hash = GENESIS_HASH
+          length = 0
           records.each do |record|
             return invalid(record, :parent_mismatch) unless value_for(record, :previous_hash).to_s == previous_hash
 
@@ -26,9 +27,10 @@ module Legion
             return invalid(record, :hash_mismatch) unless value_for(record, :record_hash).to_s == expected
 
             previous_hash = expected
+            length += 1
           end
 
-          { valid: true, length: records.size }
+          { valid: true, length: length }
         end
 
         def canonical_payload(record)

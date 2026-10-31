@@ -10,6 +10,7 @@ RSpec.describe 'PostgreSQL session timeout initialization' do
     original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
     begin
       settings.merge!(adapter: 'postgres', statement_timeout: 37, lock_timeout: 19,
+                      creds: { database: 'legion_test', user: 'test', password: 'test' },
                       log: false, query_log: false, dev_mode: false, test: true,
                       preconnect: false, read_replica_url: nil, replicas: [])
       example.run

@@ -8,7 +8,7 @@ RSpec.describe 'Apollo embedding and ownership migration' do
   let(:migration_path) { File.expand_path('../../../lib/legion/data/migrations', __dir__) }
 
   before do
-    Sequel::Migrator.run(db, migration_path, target: 136)
+    Sequel::Migrator.run(db, migration_path, target: 138)
   end
 
   after do
@@ -20,10 +20,10 @@ RSpec.describe 'Apollo embedding and ownership migration' do
   end
 
   def apollo_upgrade(**)
-    Sequel::Migrator.run(db, migration_path, target: 137)
+    Sequel::Migrator.run(db, migration_path, target: 139)
   end
 
-  it 'upgrades the real version 136 tables without changing existing records or inventing provenance' do
+  it 'upgrades the real version 138 tables without changing existing records or inventing provenance' do
     apollo_insert(content_hash: 'a' * 64, access_scope: 'private', identity_principal_id: 41)
     apollo_insert(table: :apollo_entries_archive, content_hash: 'a' * 64, access_scope: 'private', identity_principal_id: 41)
     snapshots = %i[apollo_entries apollo_entries_archive].to_h { |table| [table, db[table].all] }
@@ -35,7 +35,7 @@ RSpec.describe 'Apollo embedding and ownership migration' do
         row.merge(embedding: nil, embedding_space_id: nil, embedding_dimensions: nil, embedding_provenance: nil)
       end)
     end
-    expect(db[:schema_info].get(:version)).to eq(137)
+    expect(db[:schema_info].get(:version)).to eq(139)
   end
 
   it 'preserves pre-existing SQLite vectors byte-for-byte without guessing their model' do
@@ -134,8 +134,8 @@ RSpec.describe 'Apollo embedding and ownership migration' do
     apollo_insert(content_hash: 'two-owners', access_scope: 'private', identity_principal_id: 42, embedding: '[1,2,3]')
     snapshots = db[:apollo_entries].all
 
-    expect { Sequel::Migrator.run(db, migration_path, target: 136) }.to raise_error(Sequel::Error, /cannot be reversed/)
+    expect { Sequel::Migrator.run(db, migration_path, target: 138) }.to raise_error(Sequel::Error, /cannot be reversed/)
     expect(db[:apollo_entries].all).to eq(snapshots)
-    expect(db[:schema_info].get(:version)).to eq(137)
+    expect(db[:schema_info].get(:version)).to eq(139)
   end
 end

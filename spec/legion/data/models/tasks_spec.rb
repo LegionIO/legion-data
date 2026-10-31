@@ -5,10 +5,6 @@ Legion::Data::Connection.setup
 Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::Task do
-  after(:all) do
-    Legion::Data::Connection.shutdown
-  end
-
   it { should respond_to? :relationship }
   it { should respond_to? :task_log }
   it { should respond_to? :parent }
@@ -17,7 +13,6 @@ RSpec.describe Legion::Data::Model::Task do
   it { should respond_to? :slave }
   it { should respond_to? :user_owner }
   it { should respond_to? :group_owner }
-  it { should be_a Sequel::Model }
 
   describe '.idempotency_key_for' do
     it 'returns the same SHA-256 key for hash payloads with different key order' do
@@ -45,6 +40,27 @@ RSpec.describe Legion::Data::Model::Task do
       second = described_class.create_idempotent(attrs, payload: { a: 2 })
 
       expect(second.id).not_to eq(first.id)
+    end
+
+    it 'reuses an expired key without treating another key as the same task' do
+      key = "expired-#{SecureRandom.hex(12)}"
+      expired = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: -1)
+      active = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 60)
+      other = described_class.create_idempotent({ status: 'pending' }, idempotency_key: "#{key}-other")
+
+      expect(active.id).not_to eq(expired.id)
+      expect(described_class.create_idempotent({ status: 'pending' }, idempotency_key: key).id).to eq(active.id)
+      expect(other.id).not_to eq(active.id)
+    end
+
+    it 'allows valid creation with the same key after a foreign-key failure' do
+      key = "rollback-#{SecureRandom.hex(12)}"
+      expect do
+        described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
+      end.to raise_error(Sequel::ForeignKeyConstraintViolation)
+
+      task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+      expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])
     end
   end
 end

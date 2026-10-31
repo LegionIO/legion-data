@@ -30,7 +30,10 @@ module Legion
         def load
           log.info 'Loading Legion::Data::Models'
           @loaded_models ||= []
+          database = Legion::Data::Connection.sequel
+          Sequel::Model.db = database
           require_sequel_models(models)
+          bind_database(namespace: Legion::Data::Model, database: database)
           Legion::Settings[:data][:models][:loaded] = true
         end
 
@@ -48,6 +51,22 @@ module Legion
         rescue LoadError => e
           handle_exception(e, level: :fatal, operation: :load_sequel_model, model: model)
           raise e unless Legion::Settings[:data][:models][:continue_on_load_fail]
+        end
+
+        private
+
+        def bind_database(namespace:, database:)
+          namespace.constants(false).each do |name|
+            value = namespace.const_get(name, false)
+            if value.is_a?(Class) && value < Sequel::Model
+              next if value.db.equal?(database)
+
+              value.set_dataset(database[value.table_name])
+              value.association_reflections.each_value { |reflection| reflection[:cache]&.clear }
+            elsif value.is_a?(Module)
+              bind_database(namespace: value, database: database)
+            end
+          end
         end
       end
     end

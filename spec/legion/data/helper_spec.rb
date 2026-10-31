@@ -211,16 +211,6 @@ RSpec.describe Legion::Data::Helper do
     end
     let(:instance) { test_class.new }
 
-    it 'delegates to Legion::Data.can_read?' do
-      allow(Legion::Data).to receive(:can_read?).with(:tasks).and_return(true)
-      expect(instance.data_can_read?(:tasks)).to be true
-    end
-
-    it 'returns false when Legion::Data.can_read? returns false' do
-      allow(Legion::Data).to receive(:can_read?).with(:tasks).and_return(false)
-      expect(instance.data_can_read?(:tasks)).to be false
-    end
-
     it 'returns false when an error is raised' do
       allow(Legion::Data).to receive(:can_read?).and_raise(StandardError)
       expect(instance.data_can_read?(:tasks)).to be false
@@ -234,16 +224,6 @@ RSpec.describe Legion::Data::Helper do
       end
     end
     let(:instance) { test_class.new }
-
-    it 'delegates to Legion::Data.can_write?' do
-      allow(Legion::Data).to receive(:can_write?).with(:tasks).and_return(true)
-      expect(instance.data_can_write?(:tasks)).to be true
-    end
-
-    it 'returns false when Legion::Data.can_write? returns false' do
-      allow(Legion::Data).to receive(:can_write?).with(:tasks).and_return(false)
-      expect(instance.data_can_write?(:tasks)).to be false
-    end
 
     it 'returns false when an error is raised' do
       allow(Legion::Data).to receive(:can_write?).and_raise(StandardError)

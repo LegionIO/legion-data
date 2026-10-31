@@ -6,17 +6,7 @@ require 'legion/data/event_store'
 RSpec.describe Legion::Data::EventStore do
   let(:db) do
     Sequel.sqlite.tap do |database|
-      database.create_table(:governance_events) do
-        primary_key :id
-        String :stream_id, null: false
-        String :event_type, null: false
-        Integer :sequence_number, null: false
-        column :data_json, :text
-        column :metadata_json, :text
-        String :event_hash, size: 64
-        String :previous_hash, size: 64
-        DateTime :created_at, null: false, default: Sequel::CURRENT_TIMESTAMP
-      end
+      Sequel::Migrator.run(database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
     end
   end
 
@@ -91,6 +81,14 @@ RSpec.describe Legion::Data::EventStore do
       result = described_class.verify_chain('stream-2')
 
       expect(result).to eq(valid: true, length: 2)
+    end
+
+    it 'propagates unrelated insert errors and releases the stream claim on rollback' do
+      expect { described_class.append(stream: 'rollback', type: nil) }.to raise_error(Sequel::NotNullConstraintViolation)
+
+      event = described_class.append(stream: 'rollback', type: 'consent.granted')
+      expect(event[:sequence]).to eq(1)
+      expect(described_class.verify_chain('rollback')).to eq(valid: true, length: 1)
     end
 
     it 'detects metadata tampering for newly-written rows' do
