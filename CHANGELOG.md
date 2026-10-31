@@ -1,5 +1,19 @@
 # Legion::Data Changelog
 
+## [1.11.0] - 2026-10-30
+
+### Added
+- Transactional `Legion::Data::TaskExecution` logical-task creation, renewable owned attempts, compare-and-set lifecycle transitions, bounded retries, task/parent cancellation and deadline checks, and durable dispatch intents.
+- Additive migrations 137–139 introduce nullable unique execution identities, task execution metadata, `task_attempts`, and `task_dispatches`. Historical duplicate idempotency keys remain valid.
+- Durable outbox claims, owner-checked acknowledgements, recoverable releases, and terminal discards distinguish accepted publication from undelivered or cancelled work.
+- Migration 140 provisions `task_logs` and registers its model, with generated UUIDs and retained log evidence when parent records are removed. Unsupported manually created tables fail safely without data loss and require operator reconciliation.
+
+### Changed
+- Task statuses and execution/outbox policy use the shared `legion-settings >= 1.5.0` task execution helper.
+- Task idempotency model methods use keyword arguments and return plain hashes. Replays retain the original logical task even after terminal completion or TTL expiry; producers must use distinct keys for new occurrences.
+- Expired ambiguous attempts become terminal `unknown` outcomes instead of repeating potentially completed external effects. Completion and successful continuation intent commit together.
+- Normalize incoming UTC/offset `Time` values at the new persistence boundaries so deadlines, leases, delayed-task creation, and log event times retain their absolute instant under Sequel's default timezone behavior, without rewriting historical data.
+
 ## [1.10.17] - 2026-10-29
 
 ### Fixed

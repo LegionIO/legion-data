@@ -22,3 +22,4 @@ legion.log
 *.db
 .worktrees
 /docs/
+/.ci-dependencies/

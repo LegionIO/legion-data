@@ -207,19 +207,91 @@ Supported formats: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.xlsx`, `
 When migration 076 is present, Extract also persists the same per-step timing rows to `extract_step_timings`
 under the returned `extract_id`.
 
-### Task Idempotency
+### Durable Task Execution
 
-`Task.idempotency_key_for` computes a stable SHA-256 key from canonical JSON payloads. `Task.create_idempotent`
-returns an existing non-terminal task for the same key inside the optional TTL window, or creates a new task
-with `idempotency_key` and `idempotency_expires_at` populated:
+`require 'legion/data/task_execution'` exposes the transactional task substrate. Run migrations
+137–140 before using it. The API uses the current `Legion::Data.connection` on every call and
+joins an existing Sequel transaction, so scheduler occurrences, task creation, and dispatch
+intents can commit or roll back together. SQLite uses immediate write transactions; other
+adapters use row locks, and lifecycle updates additionally compare the persisted version.
+Incoming `Time` values and ISO8601 deadlines retain their absolute instant when serialized
+under Sequel's default timezone behavior; global timezone configuration and historical rows
+are not changed.
 
 ```ruby
-task = Legion::Data::Model::Task.create_idempotent(
-  { status: 'pending', payload: Legion::JSON.dump(payload) },
-  payload: payload,
-  ttl: 300
+task_config = Legion::Settings[:task_execution]
+created = Legion::Data::TaskExecution.create_task(
+  values: { status: task_config[:statuses][:queued], function_args: { item_id: 42 } },
+  idempotency_key: 'parent:relationship:fanout-index',
+  dispatch: {
+    event_key: 'parent:relationship:fanout-index:dispatch',
+    message_type: task_config[:message_types][:task],
+    options: { function: 'perform', args: { item_id: 42 } }
+  }
 )
+created[:task] # Plain Hash, never a Sequel model; actual task_id is injected into dispatch options.
 ```
+
+All public functions use keyword arguments:
+
+| Operation | Return |
+|-----------|--------|
+| `create_task(values:, idempotency_key:, dispatch: nil)` | `{created:, task:}` |
+| `claim_task(task_id:, owner:, now: Time.now)` | `{claimed:, task:, token:, attempt_id:, reason:}` |
+| `renew_task_lease(task_id:, token:, now: Time.now)` | `{renewed:, task:}` |
+| `transition_task(task_id:, status:, expected_status: nil, token: nil, values: {})` | `{changed:, task:, reason:}` |
+| `complete_task(task_id:, status:, result:, token: nil, continuation: nil)` | `{changed:, task:}` |
+| `enqueue_dispatch(event_key:, message_type:, options:, task_id: nil)` | `{created:, dispatch:}` |
+| `enqueue_task_dispatch(task_id:, event_key:, message_type:, options:, expected_status:)` | `{created:, dispatch:}` |
+| `claim_dispatches(owner:, limit: nil, now: Time.now)` | Array of dispatch Hashes including `id`, `token`, `message_type`, decoded `options`, and `task_id` |
+| `ack_dispatch(dispatch_id:, token:)` / `release_dispatch(dispatch_id:, token:, error:)` | `{changed:}` |
+| `discard_dispatch(dispatch_id:, token:, reason:)` | `{changed:, dispatch:}` |
+
+Unique `tasks.execution_key` and `task_dispatches.event_key` enforce logical identity under
+concurrency. Repeated creation returns the original task, including its terminal outcome.
+TTL is retention metadata, **not permission to repeat an external effect**: new schedule
+occurrences or intentional executions must have new keys. Historical `idempotency_key`
+duplicates are not modified or constrained by the new nullable unique execution key.
+
+Claims persist an attempt and an unguessable execution token. Live owners cannot be replaced;
+long-running owners must heartbeat with `renew_task_lease` before their lease expires.
+Renewal updates the task and attempt together and cannot revive expired or terminal claims.
+Expired ambiguous attempts become terminal `unknown`, requiring explicit reconciliation
+rather than automatic re-execution. Cancellation and deadlines are checked before claiming,
+transitioning, completing, and promoting delayed tasks. Terminal outcomes reject late updates.
+Only the owner of a known failed attempt may request `retry_pending`, subject to configured
+attempt limits and exponential backoff. `complete_task` can record a retry atomically when
+given `status: retry_pending` and a result with `success: false` and canonical `failed` or
+`exception` status; exhausted attempts remain terminal failures. The caller must restrict
+retries to operations known to be safe. A successful completion may include a continuation
+descriptor with the same shape as `dispatch`; the outcome and intent are one transaction.
+
+Dispatch delivery is **at least once**, not exactly once. A relay must use confirmed publication,
+acknowledge only accepted messages, and release rejected publications. A crash after publish
+but before acknowledgement causes lease-based republication; downstream logical-task
+identity prevents duplicate execution. `discard_dispatch` permanently records cancellation
+without claiming delivery. `delivered_at` means publication was accepted, not that the target
+completed. Pending intents remain durable across connection/process replacement.
+
+Policy comes from `Legion::Settings::TaskExecution::Helper` and the shared `task_execution`
+settings namespace (statuses, terminal statuses, retry limits/delays, execution/outbox leases,
+and outbox batch size). `results`, `payload`, `function_args`, and `transformation_result`
+accept Hash/Array input and remain JSON text in returned task rows; decode them with
+`Legion::JSON.load`. Dispatch `options` is decoded for the relay. No transport dependency or
+publication fallback is hidden inside this storage API.
+
+`Legion::Data::Model::Task.idempotency_key_for(payload:)` computes a stable SHA-256 key from
+canonical JSON. `create_idempotent(values:, payload: nil, idempotency_key: nil, ttl: nil)`
+uses the same atomic creation path and returns task values. `find_active_by_idempotency_key(key:, now:)`
+returns active task values or nil; `terminal?` recognizes configured canonical and legacy statuses.
+
+Migration 140 supplies the previously unprovisioned `task_logs` table and the normal model
+loader registers `Legion::Data::Model::TaskLog`. Write through `TaskLog.create` to generate its
+public UUID and retain event-time metadata; entries are text and may reference a task, node,
+or function. Removing those referenced records nulls the reference rather than deleting the
+log evidence. An unsupported manually created `task_logs` table requires operator
+reconciliation before upgrading: migration 140 fails safely if it already exists and never
+overwrites, truncates, or automatically adopts existing logs.
 
 ### Filesystem Spool (Write Buffer)
 
@@ -616,9 +688,19 @@ bundle exec legionio_migrate
 git clone https://github.com/LegionIO/legion-data
 cd legion-data
 bundle install
-bundle exec rspec        # all tests must pass
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
 bundle exec rubocop -A   # zero offenses expected
 ```
+
+Task-execution lifecycle and concurrency regressions use temporary SQLite storage by default.
+To exercise the same lifecycle suite on PostgreSQL, set `LEGION_DATA_ADAPTER=postgres` and
+`LEGION_DATA_HOST`, `LEGION_DATA_PORT`, `LEGION_DATA_USER`, `LEGION_DATA_PASSWORD`, and
+`LEGION_DATA_DATABASE` for a **disposable test database**, then run the full RSpec command
+above. These examples create and remove a random isolated schema, applying the actual task
+migrations with minimal foreign-key fixtures. This verifies PostgreSQL ownership locks,
+savepoint rollback, unique identities, and reconnect behavior; it does not claim coverage of
+the unrelated historical `pgvector` migration chain. Other suites retain their own database
+fixtures.
 
 This repo also includes a pre-commit configuration:
 
