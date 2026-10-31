@@ -12,7 +12,9 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: LegionIO/.github/.github/workflows/ci.yml@main
+    uses: LegionIO/.github/.github/workflows/ci.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
+    with:
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}' || '{}' }}
 
   ci-postgres:
     name: "RSpec (PostgreSQL)"
@@ -36,6 +38,11 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - name: Check out companion gems
+        if: github.event_name == 'pull_request'
+        uses: LegionIO/.github/actions/companion-gems@ef14bb68db4bc530509f5c31b1de364a5575a16b
+        with:
+          repositories: '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}'
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
@@ -61,7 +68,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    uses: LegionIO/.github/.github/workflows/security-scan.yml@main
+    uses: LegionIO/.github/.github/workflows/security-scan.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
+    with:
+      companion-gems: ${{ github.event_name == 'pull_request' && '{"legion-settings":{"repository":"LegionIO/legion-settings","ref":"ec2274f2001f0b8db296acf78ea99f2a8aebb4d7"}}' || '{}' }}
 
   version-changelog:
     permissions:

@@ -17,6 +17,7 @@ require_relative 'data/rls'
 require_relative 'data/extract'
 require_relative 'data/audit_record'
 require_relative 'data/audit_log_hash_chain'
+require_relative 'data/task_execution'
 
 unless Legion::Logging::Helper.method_defined?(:handle_exception)
   module Legion

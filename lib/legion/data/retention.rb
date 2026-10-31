@@ -29,6 +29,7 @@ module Legion
           loop do
             archived = db.transaction(savepoint: true, **(db.database_type == :sqlite ? { mode: :immediate } : {})) do
               records = db[table].where(Sequel.identifier(date_column) < cutoff).order(*primary_keys).limit(batch_size)
+              records = records.where(execution_key: nil) if table.to_sym == :tasks
               records = records.for_update unless db.database_type == :sqlite
               rows = records.all
               next 0 if rows.empty?

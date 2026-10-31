@@ -124,6 +124,7 @@ module Legion
           candidates = conn[source].where(Sequel[date_column] < cutoff).order(:id).limit(batch_size)
           candidates = candidates.where(status: statuses) if statuses
           if source == :tasks
+            candidates = candidates.where(execution_key: nil)
             references = conn.from(Sequel.as(:tasks, :dependent_tasks))
                              .where(Sequel.|({ parent_id: Sequel[:tasks][:id] }, { master_id: Sequel[:tasks][:id] }))
                              .exclude(id: Sequel[:tasks][:id]).exists
@@ -136,7 +137,7 @@ module Legion
             locked = conn.database_type == :sqlite ? candidates : candidates.for_update
             selected_ids = locked.select_map(:id)
             selected = conn[source].where(id: selected_ids).order(:id)
-            selected = selected.exclude(references) if source == :tasks
+            selected = selected.where(execution_key: nil).exclude(references) if source == :tasks
             selected = selected.for_update unless conn.database_type == :sqlite
             rows = selected.all
             rows.each do |row|

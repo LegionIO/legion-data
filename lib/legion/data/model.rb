@@ -11,7 +11,7 @@ module Legion
         attr_reader :loaded_models
 
         def models
-          %w[extension function relationship chain task runner node setting digital_worker
+          %w[extension function relationship chain task task_log runner node setting digital_worker
              apollo_entry apollo_relation apollo_expertise apollo_access_log audit_log
              audit_record extract_step_timing
              identity/identity identity/principal identity/providers identity/group
