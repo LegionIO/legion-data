@@ -1,5 +1,18 @@
 # Legion::Data Changelog
 
+## [1.10.29] - 2026-10-30
+
+### Added
+- Add forward migration 139 for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON text vectors on SQLite and unconstrained native vectors on PostgreSQL.
+
+### Fixed
+- Replace global active content-hash uniqueness with scope/owner uniqueness while preserving original hashes, existing records, legacy null owners, and archived copies.
+- Preserve PostgreSQL vectors while removing incompatible direct-column ANN indexes; retain unrelated and dimension-constrained expression indexes. Legacy provenance remains unknown until application-driven reembedding.
+
+### Changed
+- Migration 139 is intentionally irreversible: restoring fixed vector dimensions or global uniqueness could reject or destroy newly valid data.
+- Integrate main through 1.10.28 and preserve its published migrations 137 and 138; move the unmerged Apollo migration to 139.
+
 ## [1.10.28] - 2026-10-30
 
 ### Changed
