@@ -2,7 +2,7 @@
 
 Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.17 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.10.18 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -73,7 +73,7 @@ Legion::Data (singleton module)
 │   ├── .connection_info  # Adapter, liveness, and fallback diagnostics
 │   ├── .fallback_active? # True when dev fallback moved a network DB to SQLite
 │   ├── .stats          # Pool metrics, tuning snapshot, adapter-specific DB stats
-│   └── .shutdown       # Disconnect and close query file logger
+│   └── .shutdown       # Drain accepted work; return true only after cleanup
 │
 ├── Migration           # Auto-migration system (97 numbered Sequel DSL migrations)
 │
@@ -151,6 +151,14 @@ Legion::Data::Connection.connection_info
 Legion::Data.shutdown
 ```
 
+### Graceful Database Shutdown
+
+`Legion::Data.shutdown` returns `true` when the shared pool has drained and its connections and query logger are closed. An idle pool closes immediately. Once shutdown starts, new checkouts are rejected; work already accepted by the pool may finish, including nested checkouts in the same execution context.
+
+If `shutdown_timeout` expires, shutdown returns `false` rather than claiming active connections were forcibly closed. The last accepted checkout performs deferred cleanup. `Connection.connection_info[:shutdown]` reports `state` (`open`, `draining`, `closing`, `closed`, or `failed`) and `active_requests`, which counts accepted execution contexts, including pool waiters—not physical connections. A cleanup failure is logged and can be retried by calling shutdown again.
+
+Shutdown does not cancel SQL, kill worker threads, or close borrowed connections. Configure database statement timeouts separately to bound query execution. To resume work after completed shutdown, call `Legion::Data.setup`; it creates a new pool and rebinds loaded models.
+
 ### Model Associations
 
 Models use Sequel associations as the public object graph. Prefer association methods and association datasets over hand-written foreign-key lookups when the relationship is part of the schema contract.
@@ -221,15 +229,47 @@ task = Legion::Data::Model::Task.create_idempotent(
 )
 ```
 
+Terminal tasks and expired TTLs allow a replacement. This database helper uses a lookup followed by an insert; concurrent callers are not guaranteed to receive the same task. It does not provide RabbitMQ delivery or execution deduplication.
+
+### Serialized Audit and Governance Appends
+
+After migration 138, `AuditRecord.append` serializes each chain and `EventStore.append` serializes each stream with database-backed claims, including empty chains. Different audit/event namespaces remain independent. Claim rows do not accumulate after transactions finish; failed appends roll back both claim and record.
+
+Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
+
+### Bounded Retention
+
+```ruby
+Legion::Data::Retention.archive_old_records(
+  table: :audit_log, archive_after_days: 90, batch_size: 1000
+) # => { archived: total_moved, table: :audit_log }
+```
+
+Source tables need a declared primary key, including composite keys. `batch_size` must be a positive integer and bounds each materialized batch. Rows are selected in primary-key order; PostgreSQL/MySQL lock them and SQLite uses an immediate write transaction. Each batch copies and deletes exactly the same identities atomically, including when other rows become eligible during the copy.
+
+Outside a caller-owned transaction, each batch commits independently. A later failure is raised without undoing earlier batches; rerun to archive the remaining eligible rows. A successful result sums that invocation's moved rows. If the caller wraps retention in its own transaction, that outer transaction still controls commit and lock lifetime.
+
+### Audit Verification After Retention
+
+`Legion::Data::Model::AuditLog.verify_chain` verifies hot `audit_log` rows together with retained `audit_log_archive` rows in one ordered SQL statement when the archive exists. Moving records between these tables does not discard their predecessors or create a mixed-snapshot boundary. Archived content is rehashed; missing predecessors, modified content, and duplicate copies remain verification failures.
+
+Passing an explicit record collection still verifies exactly that collection from genesis. Cold storage and purged history are not silently trusted: missing archived predecessors remain invalid until the complete history is supplied. This does not change LegionIO's separate tier-verification API.
+
+Before the first retention run, verification reads hot-only history without creating archive schema. It checks again afterward for concurrent archive creation and, if the archive appeared, verifies both tables together. Only an actual missing-table error means the archive is absent; permission, connection, and other database failures propagate.
+
 ### Filesystem Spool (Write Buffer)
 
 When the database is unavailable, `Legion::Data::Spool` buffers writes to `~/.legionio/data/spool/` and replays once the connection is restored:
 
 ```ruby
 spool = Legion::Data::Spool.for(Legion::Extensions::MyLex)
-spool.write({ task_id: SecureRandom.uuid, data: payload })
-spool.drain { |entry| process(entry) }
+spool.write(:events, { task_id: SecureRandom.uuid, data: payload })
+spool.flush(:events) { |entry| process(entry) }
 ```
+
+Replay claims each event with a nonblocking advisory file lock held through the callback and successful deletion. Concurrent processes cannot replay the same live claim. `read` and `clear` skip in-flight entries; `count` includes them until deletion. Corrupt files are quarantined under the same ownership protocol.
+
+Callback failure retains the event and releases its lock. Process exit also releases the lock automatically, so the next drainer can recover it without stale claim markers. Delivery is **at least once**: a crash after an external side effect but before deletion can replay that effect. Callbacks must provide their own idempotency. Single-drainer filename order is preserved, but concurrent completion order is not guaranteed. The spool filesystem must support cooperative advisory locking.
 
 ### Row-Level Security (PostgreSQL)
 
@@ -250,6 +290,10 @@ Legion::Data.can_write?(:tasks)  # => true (SQLite always true)
 Legion::Data.can_read?(:tasks)   # => true
 Legion::Data.reset_privileges!   # clear cached privilege checks
 ```
+
+Checks use the active database adapter, including SQLite fallback, and return false while disconnected. PostgreSQL checks table-level SELECT/INSERT grants. MySQL checks base tables with a zero-row SELECT and a nonexecuting `EXPLAIN INSERT`; checking a MySQL view also requires the privileges needed to explain that view, including SHOW VIEW for writes. Neither probe inserts data.
+
+Successful lookups are cached per physical connection. Connection replacement and credential rotation invalidate caches; query or connection failures return false without caching a denial. Call `reset_privileges!` after changing grants or roles on existing sessions.
 
 ---
 
@@ -414,6 +458,12 @@ Enable `data.query_log` (or `data.local.query_log`) to write SQL to a dedicated 
 ```
 
 Replica URLs initialize a sharded pool at startup. URL-specific options override primary connection options; omitted credentials and session timeouts are inherited. Duplicate URLs are registered once as `read_0`, `read_1`, and so on. Reads remain on the primary unless explicitly routed, for example `dataset.server(Legion::Data::Connection.read_server)`. With no replicas configured, `read_server` returns `:default`.
+
+### Task Database Archival
+
+`Archival.archive_completed_tasks` and task-policy archival retain every task field after migration 137. Copy/delete and restore are atomic; only copied task IDs are deleted. A task referenced as a parent or master by another live task remains hot, so linked task trees archive from leaves upward across batches.
+
+Restore preserves original IDs and restores parent/master links after inserting the requested rows. Include archived ancestors in the same restore request or restore them first. Occupied IDs or missing referenced functions/relationships cause rollback and leave the archive intact. Fields already discarded by older archival versions cannot be reconstructed by this migration.
 
 ### Archive Objects
 

@@ -5,10 +5,6 @@ Legion::Data::Connection.setup
 Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::Runner do
-  after(:all) do
-    Legion::Data::Connection.shutdown
-  end
-
   it { should respond_to? :chain }
   it { should respond_to? :task }
   it { should respond_to? :functions }

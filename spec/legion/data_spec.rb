@@ -3,8 +3,19 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Data do
-  after(:all) do
-    Legion::Data::Connection.shutdown
+  around do |example|
+    original = Legion::Data::Connection.sequel
+    settings = Legion::Settings[:data].dup
+    begin
+      Legion::Data::Connection.sequel = nil
+      Legion::Settings[:data][:connected] = false
+      example.run
+    ensure
+      Legion::Data::Connection.shutdown
+      Legion::Data::Connection.sequel = original
+      Legion::Settings[:data].replace(settings)
+      Legion::Data::Models.load
+    end
   end
 
   it 'has a version number' do
@@ -16,12 +27,9 @@ RSpec.describe Legion::Data do
     expect(Legion::Settings[:data][:connected]).to eq true
   end
 
-  describe Legion::Data.shutdown do
-    it 'should not raise_error' do
-      expect { Legion::Data.shutdown }.not_to raise_error
-    end
-
+  describe '.shutdown' do
     it 'should update Legion::Settings connection status' do
+      Legion::Data::Connection.setup
       Legion::Data.shutdown
       expect(Legion::Settings[:data][:connected]).to eq false
     end

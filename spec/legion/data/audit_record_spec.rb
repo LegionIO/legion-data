@@ -171,6 +171,15 @@ RSpec.describe Legion::Data::AuditRecord do
         expect(r1[:parent_hash]).to eq(described_class::GENESIS_HASH)
         expect(r2[:parent_hash]).to eq(described_class::GENESIS_HASH)
       end
+
+      it 'propagates invalid inserts without retaining a claim or breaking the next append' do
+        expect do
+          described_class.append(chain_id: chain_id, content_type: nil, content_hash: content_hash)
+        end.to raise_error(Sequel::NotNullConstraintViolation)
+
+        described_class.append(chain_id: chain_id, content_type: content_type, content_hash: content_hash)
+        expect(described_class.verify(chain_id: chain_id)).to eq(valid: true, length: 1)
+      end
     end
 
     describe '.verify' do
@@ -233,17 +242,16 @@ RSpec.describe Legion::Data::AuditRecord do
     end
 
     describe '.walk' do
-      it 'returns records in chronological order' do
-        3.times do |i|
-          described_class.append(
-            chain_id:     chain_id,
-            content_type: content_type,
-            content_hash: Digest::SHA256.hexdigest("walk #{i}")
-          )
+      it 'preserves append order when writer clocks move backward' do
+        timestamp = Time.now
+        allow(Time).to receive(:now).and_return(timestamp, timestamp - 60, timestamp - 120)
+        hashes = Array.new(3) { |i| Digest::SHA256.hexdigest("walk #{i}") }
+        hashes.each do |hash|
+          described_class.append(chain_id: chain_id, content_type: content_type, content_hash: hash)
         end
-        records = described_class.walk(chain_id: chain_id)
-        expect(records.size).to eq(3)
-        expect(records.map { |r| r[:chain_id] }.uniq).to eq([chain_id])
+
+        expect(described_class.walk(chain_id: chain_id).map { |record| record[:content_hash] }).to eq(hashes)
+        expect(described_class.verify(chain_id: chain_id)).to eq(valid: true, length: 3)
       end
 
       it 'accepts a since: filter' do

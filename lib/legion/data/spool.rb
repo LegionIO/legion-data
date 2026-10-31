@@ -61,8 +61,10 @@ module Legion
 
         def read(sub_namespace)
           sorted_files(sub_namespace).each_with_object([]) do |path, events|
-            event = load_event_file(path, sub_namespace)
-            events << event if event
+            with_locked_event(path) do |file|
+              event = load_event_file(file, path, sub_namespace)
+              events << event if event
+            end
           end
         rescue StandardError => e
           handle_exception(e, level: :error, handled: false, operation: :spool_read, sub_namespace: sub_namespace)
@@ -72,13 +74,16 @@ module Legion
         def flush(sub_namespace)
           count = 0
           path = nil
-          sorted_files(sub_namespace).each do |path|
-            event = load_event_file(path, sub_namespace)
-            next unless event
+          sorted_files(sub_namespace).each do |entry_path|
+            path = entry_path
+            with_locked_event(path) do |file|
+              event = load_event_file(file, path, sub_namespace)
+              next unless event
 
-            yield event
-            File.delete(path)
-            count += 1
+              yield event
+              File.delete(path)
+              count += 1
+            end
           end
           log.info "Spool drained #{count} item(s) from #{sub_namespace}" if count.positive?
           count
@@ -95,8 +100,10 @@ module Legion
           dir = sub_dir(sub_namespace)
           return unless Dir.exist?(dir)
 
-          Dir[File.join(dir, '*.json')].each { |f| File.delete(f) }
-          log.info "Spool cleared #{sub_namespace}"
+          sorted_files(sub_namespace).each do |path|
+            with_locked_event(path) { |_file| File.delete(path) }
+          end
+          log.info "Spool cleared unclaimed events from #{sub_namespace}"
         rescue StandardError => e
           handle_exception(e, level: :error, handled: false, operation: :spool_clear, sub_namespace: sub_namespace)
           raise
@@ -115,11 +122,24 @@ module Legion
           Dir.glob(File.join(dir, '*.json'), sort: true)
         end
 
-        def load_event_file(path, sub_namespace)
-          ::JSON.parse(File.binread(path), symbolize_names: true)
-        rescue Errno::ENOENT => e
-          log.debug("spool event file not found: #{path}: #{e.message}")
-          nil
+        def with_locked_event(path)
+          file = begin
+            File.open(path, 'rb')
+          rescue Errno::ENOENT => e
+            log.debug("spool event file not found: #{path}: #{e.message}")
+            nil
+          end
+          return unless file
+          return unless file.flock(File::LOCK_EX | File::LOCK_NB)
+          return unless File.identical?(file, path)
+
+          yield file
+        ensure
+          file&.close
+        end
+
+        def load_event_file(file, path, sub_namespace)
+          ::JSON.parse(file.read, symbolize_names: true)
         rescue ::JSON::ParserError, EOFError, ArgumentError => e
           quarantine_corrupt_file(path, sub_namespace, e)
           nil

@@ -34,6 +34,7 @@ Legion::Data::Migration.migrate(Legion::Data::Connection.sequel,
 RSpec.configure do |config|
   config.example_status_persistence_file_path = '.rspec_status'
   config.disable_monkey_patching!
+  config.after(:suite) { Legion::Data.shutdown }
   config.expect_with :rspec do |c|
     c.syntax = :expect
   end
