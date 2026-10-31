@@ -615,8 +615,8 @@ Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true
 | 097 | LLM dispatch identifiers for fleet operation, correlation, idempotency, provider instance, and dispatch path |
 | 100–102 | SQLite Apollo entries, ownership, and access-scope indexes |
 | 119–120 | Portable missing Apollo tables and indexes |
-| 137 | Preserve task archive fields |
-| 138 | Scoped audit-chain and governance-stream append claims |
+| 137 | Preserve task archive payloads and identities |
+| 138 | Serialized audit and governance append claims |
 | 139 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness |
 
 Run migrations standalone:
