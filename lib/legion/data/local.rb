@@ -17,7 +17,7 @@ module Legion
         def setup(database: nil, **)
           return if @connected
 
-          db_file = database || local_settings[:database] || 'legionio_local.db'
+          db_file = database || Legion::Settings[:data][:local][:database]
           unless File.absolute_path?(db_file)
             base_dir = File.expand_path('~/.legionio')
             FileUtils.mkdir_p(base_dir)
@@ -26,19 +26,19 @@ module Legion
           @db_path = db_file
 
           sqlite_defaults = Legion::Data::Connection::ADAPTER_DEFAULTS.fetch(:sqlite, {})
-          data = defined?(Legion::Settings) ? Legion::Settings[:data] : {}
+          data = Legion::Settings[:data]
           opts = { adapter: :sqlite, database: db_file }
           Legion::Data::Connection::ADAPTER_KEYS.fetch(:sqlite, []).each do |key|
             val = data.key?(key) && !data[key].nil? ? data[key] : sqlite_defaults[key]
             opts[key] = val unless val.nil?
           end
-          opts[:timeout] = data[:timeout] || 30_000
+          opts[:timeout] = data[:timeout].nil? ? 30_000 : data[:timeout]
           opts[:after_connect] = proc do |connection|
             Legion::Data::Connection.configure_sqlite_busy_handler(connection: connection, timeout: opts[:timeout])
             connection.execute_batch('PRAGMA synchronous=NORMAL; PRAGMA cache_size=-20000; PRAGMA mmap_size=268435456')
           end
 
-          if local_settings[:query_log]
+          if Legion::Settings[:data][:local][:query_log]
             log_path = File.join(Legion::Data::Connection::QUERY_LOG_DIR, 'data-local-query.log')
             @query_file_logger = Legion::Data::Connection::QueryFileLogger.new(log_path)
             opts[:logger]          = @query_file_logger
@@ -99,7 +99,7 @@ module Legion
             connected:             true,
             adapter:               :sqlite,
             path:                  @db_path,
-            query_log:             local_settings[:query_log] || false,
+            query_log:             Legion::Settings[:data][:local][:query_log],
             query_log_path:        @query_file_logger&.path,
             registered_migrations: registered_migrations.keys
           }
@@ -135,7 +135,7 @@ module Legion
         private
 
         def run_migrations
-          return unless local_settings.dig(:migrations, :auto_migrate) != false
+          return unless Legion::Settings[:data][:local][:migrations][:auto_migrate]
 
           registered_migrations.each do |name, path|
             run_single_migration(name, path)
@@ -143,7 +143,7 @@ module Legion
         end
 
         def run_single_migration(name, path)
-          return unless local_settings.dig(:migrations, :auto_migrate) != false
+          return unless Legion::Settings[:data][:local][:migrations][:auto_migrate]
           return unless File.directory?(path)
 
           table = :"schema_migrations_#{name}"
@@ -151,12 +151,6 @@ module Legion
         rescue StandardError, LoadError => e
           handle_exception(e, level: :error, handled: false, operation: :local_migration, name: name, path: path)
           raise
-        end
-
-        def local_settings
-          return {} unless defined?(Legion::Settings)
-
-          Legion::Settings[:data]&.dig(:local) || {}
         end
 
         def build_local_logger
@@ -181,17 +175,11 @@ module Legion
         end
 
         def resolved_sql_log_level
-          (local_settings[:sql_log_level] || Legion::Settings[:data][:sql_log_level] || 'debug').to_sym
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :resolved_sql_log_level)
-          :debug
+          Legion::Settings[:data][:local].fetch(:sql_log_level, Legion::Settings[:data][:sql_log_level]).to_sym
         end
 
         def resolved_log_warn_duration
-          local_settings[:log_warn_duration] || Legion::Settings[:data][:log_warn_duration]
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :resolved_log_warn_duration)
-          nil
+          Legion::Settings[:data][:local].fetch(:log_warn_duration, Legion::Settings[:data][:log_warn_duration])
         end
       end
     end

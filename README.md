@@ -289,7 +289,7 @@ without claiming delivery. `delivered_at` means publication was accepted, not th
 completed. Pending intents remain durable across connection/process replacement.
 
 Local policy comes from `Legion::Data::Settings::Helper#data_task_execution_settings` and
-`Legion::Settings[:data][:task_execution]` (requires `legion-settings >= 1.4.3`). Its defaults are:
+`Legion::Settings[:data][:task_execution]` (requires `legion-settings >= 1.4.5`). Its defaults are:
 
 ```ruby
 {
@@ -471,6 +471,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 ### Full Configuration Reference
 
+Defaults are registered when the library loads; runtime consumers read the current `Legion::Settings[:data]` tree. User configuration and subsequent settings reloads take precedence, including explicit `false` migration/TLS flags and empty archival table lists. Connection options apply on the next connection setup, while local migration registration and `Archival.archive!` (without an explicit policy) read the current configuration on each call. A full `Legion::Settings.reset!` requires explicit library-default registration again before using Data.
+
 ```json
 {
   "data": {
@@ -500,6 +502,15 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     "replicas": [],
 
     "creds": { "database": "legionio.db" },
+    "tls": { "enabled": false },
+    "archival": {
+      "retention_days": 90,
+      "warm_after_days": 7,
+      "cold_after_days": 90,
+      "batch_size": 1000,
+      "tables": ["tasks", "metering_records"],
+      "storage_backend": null
+    },
 
     "migrations": {
       "continue_on_fail": false,
@@ -692,7 +703,7 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 | `csv` (>= 3.2) | CSV extraction handler |
 | `legion-json` | JSON serialization via Legion::JSON |
 | `legion-logging` (>= 1.5.0) | Structured logging |
-| `legion-settings` (>= 1.4.3) | Configuration management |
+| `legion-settings` (>= 1.4.5) | Configuration management |
 | `mysql2` (>= 0.5.5) | MySQL adapter (optional) |
 | `pg` (>= 1.5) | PostgreSQL adapter (optional) |
 

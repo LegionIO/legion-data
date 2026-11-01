@@ -28,86 +28,89 @@ module Legion
         }
       }.freeze
 
+      CONNECTION_DEFAULTS = {
+        adapter:                       'sqlite',
+        connected:                     false,
+
+        # Connection pool
+        max_connections:               25,
+        pool_timeout:                  5,
+        preconnect:                    false,
+        single_threaded:               false,
+        test:                          true,
+        name:                          nil,
+
+        # Logging
+        log:                           false,
+        query_log:                     false,
+        log_connection_info:           false,
+        log_warn_duration:             1,
+        sql_log_level:                 'debug',
+
+        # Connection health (network adapters only, ignored for sqlite)
+        # Validation is disabled by default: the connection_validator extension issues a
+        # SELECT NULL on every checkout/checkin and before real queries, which kills
+        # throughput. Connection errors are already rescued and reconnected at query time.
+        # When enabled, connection_validation_timeout: -1 validates on every checkout
+        # (catches stale connections from VPN/sleep/network changes immediately).
+        connection_validation:         false,
+        connection_validation_timeout: -1,
+        connection_expiration:         true,
+        connection_expiration_timeout: 14_400,
+
+        # Postgres session timeouts (milliseconds, applied via SET on each new connection).
+        # statement_timeout bounds any single query; lock_timeout bounds lock acquisition.
+        # These prevent a wedged SELECT or lock wait from hanging the process indefinitely.
+        statement_timeout:             5000,
+        lock_timeout:                  2000,
+
+        # TCP keepalives for Postgres (libpq connection params).
+        # Detect half-open sockets where the peer vanished without FIN/RST.
+        # keepalives_idle: seconds before first keepalive probe after idle
+        # keepalives_interval: seconds between probes
+        # keepalives_count: failed probes before declaring connection dead
+        # tcp_user_timeout: total ms for unacked data before kernel drops connection (Linux)
+        keepalives:                    1,
+        keepalives_idle:               10,
+        keepalives_interval:           5,
+        keepalives_count:              3,
+        tcp_user_timeout:              15_000,
+
+        # Shutdown: max seconds to wait for checked-out connections to return before
+        # force-disconnecting them.
+        shutdown_timeout:              5,
+
+        # Adapter-specific (nil = use adapter built-in default)
+        connect_timeout:               nil,
+        read_timeout:                  nil,
+        write_timeout:                 nil,
+        encoding:                      nil,
+        sql_mode:                      nil,
+        sslmode:                       nil,
+        sslrootcert:                   nil,
+        search_path:                   nil,
+        timeout:                       nil,
+        readonly:                      nil,
+        disable_dqs:                   nil
+      }.freeze
+
       def self.default
-        {
-          adapter:                       'sqlite',
-          connected:                     false,
-
-          # Connection pool
-          max_connections:               25,
-          pool_timeout:                  5,
-          preconnect:                    false,
-          single_threaded:               false,
-          test:                          true,
-          name:                          nil,
-
-          # Logging
-          log:                           false,
-          query_log:                     false,
-          log_connection_info:           false,
-          log_warn_duration:             1,
-          sql_log_level:                 'debug',
-
-          # Connection health (network adapters only, ignored for sqlite)
-          # Validation is disabled by default: the connection_validator extension issues a
-          # SELECT NULL on every checkout/checkin and before real queries, which kills
-          # throughput. Connection errors are already rescued and reconnected at query time.
-          # When enabled, connection_validation_timeout: -1 validates on every checkout
-          # (catches stale connections from VPN/sleep/network changes immediately).
-          connection_validation:         false,
-          connection_validation_timeout: -1,
-          connection_expiration:         true,
-          connection_expiration_timeout: 14_400,
-
-          # Postgres session timeouts (milliseconds, applied via SET on each new connection).
-          # statement_timeout bounds any single query; lock_timeout bounds lock acquisition.
-          # These prevent a wedged SELECT or lock wait from hanging the process indefinitely.
-          statement_timeout:             5000,
-          lock_timeout:                  2000,
-
-          # TCP keepalives for Postgres (libpq connection params).
-          # Detect half-open sockets where the peer vanished without FIN/RST.
-          # keepalives_idle: seconds before first keepalive probe after idle
-          # keepalives_interval: seconds between probes
-          # keepalives_count: failed probes before declaring connection dead
-          # tcp_user_timeout: total ms for unacked data before kernel drops connection (Linux)
-          keepalives:                    1,
-          keepalives_idle:               10,
-          keepalives_interval:           5,
-          keepalives_count:              3,
-          tcp_user_timeout:              15_000,
-
-          # Shutdown: max seconds to wait for checked-out connections to return before
-          # force-disconnecting them.
-          shutdown_timeout:              5,
-
-          # Adapter-specific (nil = use adapter built-in default)
-          connect_timeout:               nil,
-          read_timeout:                  nil,
-          write_timeout:                 nil,
-          encoding:                      nil,
-          sql_mode:                      nil,
-          sslmode:                       nil,
-          sslrootcert:                   nil,
-          search_path:                   nil,
-          timeout:                       nil,
-          readonly:                      nil,
-          disable_dqs:                   nil,
-
+        CONNECTION_DEFAULTS.merge(
           # Grouped settings
-          creds:                         creds,
-          cache:                         cache,
-          migrations:                    migrations,
-          models:                        models,
-          local:                         local,
-          dev_mode:                      false,
-          dev_fallback:                  true,
-          connect_on_start:              true,
-          read_replica_url:              nil,
-          replicas:                      [],
-          task_execution:                task_execution,
-          archival:                      archival
-        }
+          creds:            creds,
+          tls:              { enabled: false },
+          cache:            cache,
+          migrations:       migrations,
+          models:           models,
+          local:            local,
+          dev_mode:         false,
+          dev_fallback:     true,
+          connect_on_start: true,
+          read_replica_url: nil,
+          replicas:         [],
+          task_execution:   task_execution,
+          archival:         archival
+        )
       end
 
       def self.local
@@ -143,7 +146,10 @@ module Legion
       def self.archival
         {
           retention_days:  90,
+          warm_after_days: 7,
+          cold_after_days: 90,
           batch_size:      1000,
+          tables:          %w[tasks metering_records],
           storage_backend: nil
         }
       end
@@ -156,15 +162,8 @@ module Legion
         }
       end
 
-      def self.register!
-        return if Legion::Settings.loader&.merged_modules&.key?(:data)
-
-        Legion::Settings.register_library(:data, default)
-      end
-
       module Helper
         def data_task_execution_settings
-          Legion::Data::Settings.register!
           policy = Legion::Settings[:data].fetch(:task_execution)
           { execution: %i[lease_seconds heartbeat_seconds idempotency_ttl_seconds],
             retry: %i[max_attempts base_delay_seconds max_delay_seconds], outbox: %i[lease_seconds batch_size] }.each do |section, keys|
@@ -198,4 +197,4 @@ module Legion
   end
 end
 
-Legion::Data::Settings.register!
+Legion::Settings.register_library(:data, Legion::Data::Settings.default)

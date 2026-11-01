@@ -11,10 +11,11 @@
 - Migration 144 adds server-owned `execution_policy` JSON text to tasks and task archives. Creation snapshots lease/heartbeat and retry bounds; legacy rows capture them atomically on first claim. Claims expose immutable decoded policy, and renewals/retries honor it across differently configured workers.
 
 ### Changed
-- Data owns immutable persisted task/dispatch statuses independently of Transport and Core. Local execution/outbox defaults live under `data.task_execution`, registered through the generic `legion-settings >= 1.4.3` library API without resetting live connection state. Persisted policy and absolute timestamps, not later worker settings, govern existing durable tasks.
+- Data owns immutable persisted task/dispatch statuses independently of Transport and Core. Local execution/outbox defaults live under `data.task_execution`, registered through the generic `legion-settings >= 1.4.5` library API without resetting live connection state. Persisted policy and absolute timestamps, not later worker settings, govern existing durable tasks.
 - Task idempotency model methods use keyword arguments and return plain hashes. Replays retain the original logical task even after terminal completion or TTL expiry; producers must use distinct keys for new occurrences.
 - Expired ambiguous attempts become terminal `unknown` outcomes instead of repeating potentially completed external effects. Completion and successful continuation intent commit together.
 - Normalize incoming UTC/offset `Time` values at the new persistence boundaries so deadlines, leases, delayed-task creation, and log event times retain their absolute instant under Sequel's default timezone behavior, without rewriting historical data.
+- Read runtime configuration from the live `Legion::Settings[:data]` tree, including TLS, local migration permission, archival policy, and cache TTL. Register defaults once at library boot; execution-policy validation no longer bootstraps or resets settings during reads, and invalid configured policies are not silently replaced.
 
 ## [1.10.28] - 2026-10-30
 

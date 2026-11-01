@@ -17,6 +17,23 @@ RSpec.describe Legion::Data::Archival do
     db.disconnect
   end
 
+  it 'honors configured table exclusions and live retention changes without an explicit policy' do
+    original = Legion::Settings[:data][:archival]
+    begin
+      id = db[:tasks].insert(status: 'completed', created: Time.now - (3 * 86_400))
+      Legion::Settings[:data][:archival] = { tables: [], warm_after_days: 2 }
+      expect(described_class.archive!).to eq({})
+      expect(db[:tasks].where(id: id).count).to eq(1)
+
+      Legion::Settings[:data][:archival] = { tables: ['tasks'], warm_after_days: 2, batch_size: 1 }
+      expect(described_class.archive!).to eq(tasks: 1)
+      expect(db[:tasks].where(id: id).count).to eq(0)
+      expect(db[:tasks_archive].where(original_id: id).count).to eq(1)
+    ensure
+      Legion::Settings[:data][:archival] = original
+    end
+  end
+
   def populated_task_values
     extension = db[:extensions].insert(name: 'archive-fixture')
     runner = db[:runners].insert(extension_id: extension, name: 'archive-fixture')

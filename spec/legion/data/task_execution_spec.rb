@@ -335,6 +335,7 @@ RSpec.describe Legion::Data::TaskExecution do
     task = task_create
     claim = described_class.claim_task(task_id: task[:id], owner: 'first')
     Legion::Settings.loader = Legion::Settings::Loader.new
+    Legion::Settings.register_library(:data, Legion::Data::Settings.default)
     Legion::Settings.loader.settings[:task_execution] = {
       statuses: { completed: 'custom.done', running: 'custom.running' }, terminal_statuses: [],
       outbox: { statuses: { delivered: 'custom.delivered' } }
@@ -355,6 +356,7 @@ RSpec.describe Legion::Data::TaskExecution do
     local[:retry].merge!(max_attempts: 3, base_delay_seconds: 7, max_delay_seconds: 9)
     task = task_create
     Legion::Settings.loader = Legion::Settings::Loader.new
+    Legion::Settings.register_library(:data, Legion::Data::Settings.default)
     data_task_execution_settings[:execution].merge!(lease_seconds: 300, heartbeat_seconds: 100)
     data_task_execution_settings[:retry].merge!(max_attempts: 1, base_delay_seconds: 40, max_delay_seconds: 80)
     now = Time.now
@@ -409,16 +411,26 @@ RSpec.describe Legion::Data::TaskExecution do
     expect { claim[:policy][:execution][:lease_seconds] = 1 }.to raise_error(FrozenError)
   end
 
-  it 'registers replacement-loader defaults without resetting live connection state or local policy' do
+  it 'uses later live policy for new tasks without resetting connection state' do
     Legion::Settings.loader = Legion::Settings::Loader.new
-    data_task_execution_settings
+    Legion::Settings.register_library(:data, Legion::Data::Settings.default)
     Legion::Settings[:data][:connected] = true
-    data_task_execution_settings[:execution][:lease_seconds] = 120
-    data_task_execution_settings
+    task_create
+    Legion::Settings[:data][:task_execution][:execution][:lease_seconds] = 120
     expect(Legion::Data.connected?).to be(true)
     task = task_create
     claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
     expect(claim[:policy][:execution][:lease_seconds]).to eq(120)
+  end
+
+  it 'rejects a configured false retry limit instead of substituting defaults' do
+    Legion::Settings[:data][:task_execution][:retry][:max_attempts] = false
+
+    expect { task_create }.to raise_error do |error|
+      cause = error.respond_to?(:wrapped_exception) ? error.wrapped_exception : error
+      expect(cause).to be_a(ArgumentError)
+    end
+    expect(@database[:tasks].count).to eq(0)
   end
 
   it 'does not attach one dispatch identity to a different task' do

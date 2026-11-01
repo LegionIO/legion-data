@@ -178,14 +178,14 @@ module Legion
         end
 
         def adapter
-          @adapter ||= Legion::Settings[:data][:adapter]&.to_sym || :sqlite
+          @adapter || Legion::Settings[:data][:adapter].to_sym
         end
 
         def setup
           Legion::Settings[:data][:connected] = false
           @sequel&.disconnect
           @sequel = nil
-          @adapter = Legion::Settings[:data][:adapter]&.to_sym || :sqlite
+          @adapter = Legion::Settings[:data][:adapter].to_sym
           opts = sequel_opts
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
           @fallback_active = false
@@ -230,7 +230,7 @@ module Legion
             adapter:            adapter,
             connected:          Legion::Settings[:data][:connected],
             fallback_active:    @fallback_active || false,
-            configured_adapter: Legion::Settings[:data][:adapter]&.to_sym || :sqlite,
+            configured_adapter: Legion::Settings[:data][:adapter].to_sym,
             shutdown:           @sequel&.pool&.shutdown_status,
             sequel_alive:       (begin
               !@sequel&.test_connection.nil?
@@ -376,7 +376,7 @@ module Legion
           return creds if adapter == :sqlite
           return creds unless defined?(Legion::Crypt::TLS)
 
-          tls_settings = data_tls_settings
+          tls_settings = Legion::Settings[:data][:tls]
           return creds unless tls_settings[:enabled] == true
 
           tls = Legion::Crypt::TLS.resolve(tls_settings, port: port)
@@ -424,15 +424,6 @@ module Legion
 
         private
 
-        def data_tls_settings
-          return {} unless defined?(Legion::Settings)
-
-          Legion::Settings[:data][:tls] || {}
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :data_tls_settings)
-          {}
-        end
-
         def log_connection_info
           if adapter == :sqlite
             log.info "Connected to SQLite at #{sqlite_path}"
@@ -464,7 +455,7 @@ module Legion
         end
 
         def sqlite_path
-          path = Legion::Settings[:data][:creds][:database] || 'legionio.db'
+          path = Legion::Settings[:data][:creds][:database]
           return path if File.absolute_path?(path)
 
           base_dir = File.expand_path('~/.legionio/data')
@@ -610,7 +601,7 @@ module Legion
             stats[pragma.to_sym] = val unless val.nil?
           end
 
-          db_path = Legion::Settings[:data][:creds][:database] || 'legionio.db'
+          db_path = Legion::Settings[:data][:creds][:database]
           stats[:file_size] = File.size(db_path) if File.exist?(db_path)
           stats[:database_size_bytes] = (stats[:page_size].to_i * stats[:page_count].to_i) if stats[:page_size] && stats[:page_count]
           stats

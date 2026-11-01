@@ -210,7 +210,7 @@ module Legion
       end
 
       def setup_external_cache
-        ttl = Legion::Settings[:data][:cache][:ttl] || 60
+        ttl = Legion::Settings[:data][:cache][:ttl]
         {
           Model::Relationship => 10,
           Model::Node         => 10,
