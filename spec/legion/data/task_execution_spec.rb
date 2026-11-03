@@ -7,8 +7,8 @@ require 'legion/data/archival'
 require 'legion/data/retention'
 require 'legion/data/archiver'
 
-RSpec.describe Legion::Data::TaskExecution do
-  include Legion::Data::TaskStatus::Helper
+RSpec.describe Legion::Data::Task::Execution do
+  include Legion::Data::Task::Status::Helper
   include Legion::Data::Settings::Helper
 
   before(:context) do
@@ -132,6 +132,20 @@ RSpec.describe Legion::Data::TaskExecution do
     expect(described_class.create_task(values: {}, idempotency_key: 'rollback')[:created]).to be(true)
   end
 
+  it 'rolls back a failed creation even when its caller catches the error and commits unrelated work' do
+    @database.transaction do
+      task_create(key: 'unrelated')
+      expect do
+        described_class.create_task(values: {}, idempotency_key: 'rollback', dispatch: dispatch_values.merge(options: 'invalid'))
+      end.to raise_error(StandardError)
+    end
+
+    expect(@database[:tasks].select_map(:execution_key)).to eq(['unrelated'])
+    expect(@database[:task_dispatches].count).to eq(0)
+    expect(described_class.create_task(values: {}, idempotency_key: 'rollback', dispatch: dispatch_values)[:created]).to be(true)
+    expect(@database[:task_dispatches].count).to eq(1)
+  end
+
   it 'preserves logical identity after completion and idempotency TTL expiry' do
     task = task_create(key: 'logical', idempotency_expires_at: Time.now - 60)
     described_class.complete_task(task_id: task[:id], status: task_status(name: :completed), result: { answer: 42 })
@@ -181,6 +195,27 @@ RSpec.describe Legion::Data::TaskExecution do
     expect(@database[:tasks].where(id: task[:id]).get(:status)).to eq(task_status(name: :running))
     expect(@database[:task_attempts].where(id: claim[:attempt_id]).get(:finished_at)).to be_nil
     expect(@database[:task_dispatches].count).to eq(0)
+  end
+
+  it 'rolls back a failed completion inside a caller transaction that still commits' do
+    task = task_create(key: 'completion')
+    claim = described_class.claim_task(task_id: task[:id], owner: 'worker')
+    @database.transaction do
+      task_create(key: 'unrelated')
+      expect do
+        described_class.complete_task(task_id: task[:id], status: task_status(name: :completed), result: { answer: 42 }, token: claim[:token],
+                                      continuation: dispatch_values.merge(options: 'invalid'))
+      end.to raise_error(StandardError)
+    end
+
+    expect(@database[:tasks].order(:execution_key).select_map(:execution_key)).to eq(%w[completion unrelated])
+    expect(@database[:tasks].where(id: task[:id]).first).to include(status: task_status(name: :running), completed_at: nil, results: nil)
+    expect(@database[:task_attempts].where(id: claim[:attempt_id]).first).to include(finished_at: nil, status: task_status(name: :running))
+    expect(@database[:task_dispatches].count).to eq(0)
+    completed = described_class.complete_task(task_id: task[:id], status: task_status(name: :completed), result: { answer: 42 }, token: claim[:token],
+                                              continuation: dispatch_values)
+    expect(completed[:changed]).to be(true)
+    expect(@database[:task_dispatches].count).to eq(1)
   end
 
   it 'joins an outer occurrence transaction instead of committing partial task or dispatch state' do
@@ -274,6 +309,23 @@ RSpec.describe Legion::Data::TaskExecution do
     expect(results.count { |result| result[:created] }).to eq(1)
     expect(@database[:task_dispatches].count).to eq(1)
     expect(@database[:tasks].where(id: task[:id]).get(:status)).to eq(task_status(name: :dispatching))
+  end
+
+  it 'keeps scheduled work unclaimable until its scheduler promotes it' do
+    task = task_create(status: task_status(name: :scheduled))
+    expect(described_class.claim_task(task_id: task[:id], owner: 'early')[:reason]).to eq(:not_due)
+    dispatched = described_class.enqueue_task_dispatch(task_id: task[:id], **dispatch_values, expected_status: task_status(name: :scheduled))
+    expect(dispatched[:created]).to be(true)
+    expect(described_class.claim_task(task_id: task[:id], owner: 'due')[:claimed]).to be(true)
+  end
+
+  it 'treats transformer exceptions as terminal outcomes rather than executable work' do
+    task = task_create(status: task_status(name: :transformer_queued))
+    failed = described_class.complete_task(task_id: task[:id], status: task_status(name: :transformer_exception), result: { error: 'invalid input' })
+    expect(failed[:changed]).to be(true)
+    expect(described_class.claim_task(task_id: task[:id], owner: 'late')[:reason]).to eq(:terminal)
+    expect(described_class.transition_task(task_id: task[:id], status: task_status(name: :queued))[:reason]).to eq(:terminal)
+    expect(@database[:task_attempts].count).to eq(0)
   end
 
   it 'reclaims an expired publication lease with a new token while rejecting a stale acknowledgement' do
@@ -520,25 +572,111 @@ RSpec.describe Legion::Data::TaskExecution do
     end
   end
 
-  it 'preserves absolute UTC deadlines instead of reinterpreting them as local wall time' do
-    deadline = (Time.now - 10).utc
-    task = task_create(deadline_at: deadline.iso8601)
-    claim = described_class.claim_task(task_id: task[:id], owner: 'late', now: Time.now.utc)
-    expect(claim).to include(claimed: false, reason: :deadline)
-    expect(claim[:task][:status]).to eq(task_status(name: :expired))
-  end
+  context 'when workers use different process timezones' do
+    let(:instant) { Time.utc(2026, 11, 3, 12) }
 
-  it 'expires UTC execution and publication leases at the same absolute instant' do
-    task = task_create
-    lease = data_task_execution_settings.fetch(:execution).fetch(:lease_seconds)
-    described_class.claim_task(task_id: task[:id], owner: 'crashed', now: (Time.now - lease - 1).utc)
-    expect(described_class.claim_task(task_id: task[:id], owner: 'replacement')[:reason]).to eq(:unknown)
-    described_class.enqueue_dispatch(**dispatch_values)
-    outbox_lease = data_task_execution_settings.fetch(:outbox).fetch(:lease_seconds)
-    previous = described_class.claim_dispatches(owner: 'crashed-relay', now: (Time.now - outbox_lease - 1).utc).fetch(0)
-    replacement = described_class.claim_dispatches(owner: 'replacement-relay').fetch(0)
-    expect(replacement[:id]).to eq(previous[:id])
-    expect(replacement[:token]).not_to eq(previous[:token])
+    around do |example|
+      timezone = ENV.fetch('TZ', nil)
+      database_timezone = Thread.current[:database_timezone]
+      application_timezone = Thread.current[:application_timezone]
+      begin
+        ENV['TZ'] = 'America/Chicago'
+        Sequel.thread_database_timezone = :local
+        Sequel.thread_application_timezone = :local
+        example.run
+      ensure
+        ENV['TZ'] = timezone
+        Sequel.thread_database_timezone = database_timezone
+        Sequel.thread_application_timezone = application_timezone
+      end
+    end
+
+    before do
+      allow(Time).to receive(:now).and_return(instant)
+    end
+
+    it 'preserves task deadlines and attempt lease instants through creation, renewal and expiration' do
+      task = task_create(created: instant, deadline_at: (instant + 120).iso8601)
+      claim = described_class.claim_task(task_id: task[:id], owner: 'chicago')
+      ENV['TZ'] = 'UTC'
+      duplicate = described_class.create_task(values: {}, idempotency_key: task[:execution_key])[:task]
+      expect(duplicate).to include(created: instant, deadline_at: instant + 120, execution_lease_until: instant + 60)
+      expect(described_class.claim_task(task_id: task[:id], owner: 'early', now: instant + 30)[:reason]).to eq(:leased)
+      renewed = described_class.renew_task_lease(task_id: task[:id], token: claim[:token], now: instant + 30)
+      expect(renewed[:renewed]).to be(true)
+      expect(renewed[:task][:execution_lease_until]).to eq(instant + 90)
+
+      ENV['TZ'] = 'Asia/Kolkata'
+      allow(Time).to receive(:now).and_return(instant + 90)
+      expired = described_class.claim_task(task_id: task[:id], owner: 'late')
+      expect(expired).to include(claimed: false, reason: :unknown)
+      ENV['TZ'] = 'UTC'
+      expect(@database[:task_attempts].where(id: claim[:attempt_id]).first).to include(
+        created_at: instant, lease_until: instant + 90, finished_at: instant + 90, status: 'task.unknown'
+      )
+    end
+
+    it 'enforces the absolute deadline boundary rather than a reader local wall clock' do
+      task = task_create(deadline_at: (instant + 30))
+      ENV['TZ'] = 'UTC'
+      expect(described_class.claim_task(task_id: task[:id], owner: 'on-time', now: instant + 29)[:claimed]).to be(true)
+      ENV['TZ'] = 'Asia/Kolkata'
+      expect(described_class.claim_task(task_id: task[:id], owner: 'late', now: instant + 30)[:reason]).to eq(:deadline)
+    end
+
+    it 'keeps persisted retry backoff unchanged when another timezone picks up the attempt' do
+      data_task_execution_settings[:retry][:base_delay_seconds] = 10
+      task = task_create
+      claim = described_class.claim_task(task_id: task[:id], owner: 'chicago')
+      allow(Time).to receive(:now).and_return(instant + 10)
+      retrying = described_class.complete_task(task_id: task[:id], token: claim[:token], status: 'task.retry_pending',
+                                               result: { success: false, status: 'task.exception' })
+      expect(retrying[:task][:retry_at]).to eq(instant + 20)
+      ENV['TZ'] = 'UTC'
+      expect(described_class.claim_task(task_id: task[:id], owner: 'early', now: instant + 19)[:reason]).to eq(:not_due)
+      ENV['TZ'] = 'Asia/Kolkata'
+      retried = described_class.claim_task(task_id: task[:id], owner: 'due', now: instant + 20)
+      expect(retried[:claimed]).to be(true)
+      expect(retried[:task][:attempt_count]).to eq(2)
+      ENV['TZ'] = 'UTC'
+      expect(@database[:task_attempts].where(id: claim[:attempt_id]).first).to include(finished_at: instant + 10, status: 'task.exception')
+    end
+
+    it 'preserves outbox lease boundaries through reclaim, release and acknowledgement' do
+      lease = data_task_execution_settings.fetch(:outbox).fetch(:lease_seconds)
+      dispatch = described_class.enqueue_dispatch(**dispatch_values)[:dispatch]
+      first = described_class.claim_dispatches(owner: 'chicago').fetch(0)
+      ENV['TZ'] = 'UTC'
+      expect(described_class.claim_dispatches(owner: 'early', now: instant + lease - 1)).to eq([])
+      allow(Time).to receive(:now).and_return(instant + lease)
+      expect(described_class.ack_dispatch(dispatch_id: dispatch[:id], token: first[:token])).to eq(changed: false)
+      replacement = described_class.claim_dispatches(owner: 'replacement').fetch(0)
+      expect(replacement[:token]).not_to eq(first[:token])
+      expect(replacement).to include(created_at: instant, lease_until: instant + (2 * lease))
+
+      ENV['TZ'] = 'America/Chicago'
+      allow(Time).to receive(:now).and_return(instant + lease + 1)
+      expect(described_class.release_dispatch(dispatch_id: dispatch[:id], token: replacement[:token], error: 'unroutable')).to eq(changed: true)
+      ENV['TZ'] = 'UTC'
+      expect(@database[:task_dispatches].where(id: dispatch[:id]).get(:updated_at)).to eq(instant + lease + 1)
+      final = described_class.claim_dispatches(owner: 'final').fetch(0)
+      ENV['TZ'] = 'Asia/Kolkata'
+      expect(described_class.ack_dispatch(dispatch_id: dispatch[:id], token: final[:token])).to eq(changed: true)
+      ENV['TZ'] = 'UTC'
+      expect(@database[:task_dispatches].where(id: dispatch[:id]).get(:delivered_at)).to eq(instant + lease + 1)
+    end
+
+    it 'restores caller timezone policy after nested operations and exceptions' do
+      Sequel.thread_application_timezone = :nil
+      described_class.create_task(values: {}, idempotency_key: 'nested-timezone', dispatch: dispatch_values)
+      expect(Sequel.database_timezone).to eq(:local)
+      expect(Sequel.application_timezone).to be_nil
+      expect do
+        described_class.create_task(values: {}, idempotency_key: 'failed-timezone', dispatch: dispatch_values.merge(options: 'invalid'))
+      end.to raise_error(StandardError)
+      expect(Sequel.database_timezone).to eq(:local)
+      expect(Sequel.application_timezone).to be_nil
+    end
   end
 
   it 'archives legacy rows while retaining durable execution identities and attempts' do

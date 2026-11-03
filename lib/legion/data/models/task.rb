@@ -2,16 +2,15 @@
 
 require 'digest'
 require 'legion/json'
-require 'legion/data/task_execution'
 require 'time'
 
 module Legion
   module Data
     module Model
       class Task < Sequel::Model
-        extend Legion::Data::TaskStatus::Helper
-        include Legion::Data::TaskStatus::Helper
-        extend Legion::Data::Settings::Helper
+        TERMINAL_STATUSES = %w[
+          completed complete failed error cancelled canceled timeout timed_out
+        ].freeze
 
         many_to_one :function
         many_to_one :relationship
@@ -24,34 +23,32 @@ module Legion
         one_to_many :slaves, key: :master_id, class: self
         many_to_one :digital_worker, key: :worker_id, primary_key: :worker_id
 
-        def self.idempotency_key_for(payload:)
+        def self.idempotency_key_for(payload)
           Digest::SHA256.hexdigest(Legion::JSON.dump(canonical_payload(payload)))
         end
 
-        def self.find_active_by_idempotency_key(key:, now: Time.now)
+        def self.find_active_by_idempotency_key(key, now: Time.now)
           return nil if key.to_s.empty?
+          return nil unless columns.include?(:idempotency_key)
 
-          row = where(execution_key: key).first
-          return nil unless row
-          return nil if task_terminal_status?(status: row[:status])
-          return nil if row[:idempotency_expires_at] && row[:idempotency_expires_at] <= now
-
-          row.values
+          where(idempotency_key: key)
+            .exclude(status: TERMINAL_STATUSES)
+            .where { (idempotency_expires_at =~ nil) | (idempotency_expires_at > now) }
+            .reverse_order(:created, :id)
+            .first
         end
 
-        def self.create_idempotent(values:, payload: nil, idempotency_key: nil, ttl: nil)
-          key = idempotency_key || idempotency_key_for(payload: payload || values)
-          ttl ||= data_task_execution_settings.fetch(:execution).fetch(:idempotency_ttl_seconds)
-          attributes = values.merge(idempotency_expires_at: Time.now + ttl)
-          Legion::Data::TaskExecution.create_task(values: attributes, idempotency_key: key).fetch(:task)
+        def self.create_idempotent(values, payload: nil, idempotency_key: nil, ttl: nil)
+          key = idempotency_key || idempotency_key_for(payload || values)
+          existing = find_active_by_idempotency_key(key)
+          return existing if existing
+
+          expires_at = ttl ? Time.now + ttl : nil
+          create(values.merge(idempotency_key: key, idempotency_expires_at: expires_at))
         end
 
         def cancelled?
           !cancelled_at.nil?
-        end
-
-        def terminal?
-          task_terminal_status?(status: status)
         end
 
         def self.canonical_payload(value)

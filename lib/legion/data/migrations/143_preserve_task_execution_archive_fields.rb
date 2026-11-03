@@ -7,6 +7,7 @@ Sequel.migration do
       add_column :execution_token, String, size: 36, null: true
       add_column :execution_owner, String, size: 255, null: true
       add_column :execution_lease_until, DateTime, null: true
+      add_column :execution_policy, String, text: true, null: true
       add_column :attempt_count, Integer, null: false, default: 0
       add_column :lock_version, Integer, null: false, default: 0
       add_column :deadline_at, DateTime, null: true

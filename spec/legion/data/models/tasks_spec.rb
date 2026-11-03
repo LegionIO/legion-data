@@ -3,81 +3,91 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Data::Model::Task do
-  include Legion::Data::TaskStatus::Helper
+  let(:key) { SecureRandom.uuid }
 
   around do |example|
-    original = Legion::Data::Connection.instance_variable_get(:@sequel)
-    @execution_key = SecureRandom.uuid
-    begin
-      Legion::Data::Connection.instance_variable_set(:@sequel, described_class.db)
-      example.run
-    ensure
-      described_class.where(execution_key: @execution_key).delete
-      Legion::Data::Connection.instance_variable_set(:@sequel, original)
-    end
+    described_class.db.transaction(rollback: :always) { example.run }
   end
 
   it 'canonicalizes nested payload keys without changing array order' do
-    left = described_class.idempotency_key_for(payload: { b: [{ d: 4, c: 3 }], a: 1 })
-    equivalent = described_class.idempotency_key_for(payload: { 'a' => 1, 'b' => [{ 'c' => 3, 'd' => 4 }] })
-    different = described_class.idempotency_key_for(payload: { b: [3, 4], a: 1 })
+    left = described_class.idempotency_key_for({ b: [{ d: 4, c: 3 }], a: 1 })
+    equivalent = described_class.idempotency_key_for({ 'a' => 1, 'b' => [{ 'c' => 3, 'd' => 4 }] })
+    different = described_class.idempotency_key_for({ b: [3, 4], a: 1 })
     expect(left).to eq(equivalent)
     expect(left).not_to eq(different)
   end
 
-  it 'returns one logical task as plain values for duplicate requests' do
-    values = { status: task_status(name: :queued), payload: { a: 1 } }
-    first = described_class.create_idempotent(values: values, idempotency_key: @execution_key)
-    duplicate = described_class.create_idempotent(values: values, idempotency_key: @execution_key)
-    expect(duplicate).to be_a(Hash)
-    expect(duplicate[:id]).to eq(first[:id])
-    expect(described_class.find_active_by_idempotency_key(key: @execution_key)[:id]).to eq(first[:id])
+  it 'returns the existing model for duplicate positional-hash requests without an implicit TTL' do
+    values = { status: 'pending' }.freeze
+    first = described_class.create_idempotent(values, idempotency_key: key)
+    first.update(status: 'running')
+    duplicate = described_class.create_idempotent(values, idempotency_key: key)
+
+    expect(duplicate).to be_a(described_class)
+    expect(duplicate.values).to include(id: first.id, status: 'running', idempotency_expires_at: nil)
+    expect(described_class.find_active_by_idempotency_key(key, now: Time.now + 86_400).id).to eq(first.id)
+    expect(values).to eq(status: 'pending')
   end
 
-  it 'preserves completed identity and excludes canonical terminal tasks from active lookup' do
-    task = described_class.create_idempotent(values: { status: task_status(name: :queued) }, idempotency_key: @execution_key)
-    Legion::Data::TaskExecution.complete_task(task_id: task[:id], status: task_status(name: :completed), result: { answer: 42 })
-    duplicate = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
-    expect(duplicate[:id]).to eq(task[:id])
-    expect(described_class.find_active_by_idempotency_key(key: @execution_key)).to be_nil
-    expect(described_class[task[:id]].terminal?).to be(true)
+  it 'recognizes an active idempotency key stored before durable execution identities existed' do
+    existing = described_class.create(status: 'pending', idempotency_key: key)
+
+    expect(described_class.find_active_by_idempotency_key(key).id).to eq(existing.id)
+    expect(described_class.create_idempotent({ status: 'pending' }, idempotency_key: key).id).to eq(existing.id)
   end
 
-  it 'recognizes legacy terminal rows without re-creating their execution identity' do
-    task = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
-    legacy = Legion::Data::TaskStatus::LEGACY_TERMINAL_STATUSES.first
-    described_class.where(id: task[:id]).update(status: legacy)
-    expect(described_class[task[:id]].terminal?).to be(true)
-    expect(described_class.find_active_by_idempotency_key(key: @execution_key)).to be_nil
-    expect(described_class.create_idempotent(values: {}, idempotency_key: @execution_key)[:id]).to eq(task[:id])
+  it 'allows a new occurrence to reuse a terminal task key' do
+    first = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    first.update(status: 'completed')
+
+    expect(described_class.find_active_by_idempotency_key(key)).to be_nil
+    next_occurrence = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    expect(next_occurrence.id).not_to eq(first.id)
+    expect(described_class[first.id].status).to eq('completed')
+    expect(described_class.find_active_by_idempotency_key(key).id).to eq(next_occurrence.id)
   end
 
-  it 'persists task log identities and keeps their evidence when a task is removed' do
-    task = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
-    occurred_at = Time.utc(2026, 10, 30, 12)
-    record = Legion::Data::Model::TaskLog.create(task_id: task[:id], entry: 'completed work', created: occurred_at)
-    public_id = record[:uuid]
-    expect(public_id).to match(/\A[0-9a-f-]{36}\z/)
-    expect(record[:created_at]).to eq(occurred_at)
-    described_class.where(id: task[:id]).delete
-    persisted = Legion::Data::Model::TaskLog[uuid: public_id]
+  it 'allows key reuse at the explicit TTL boundary' do
+    now = Time.local(2026, 11, 3, 12)
+    allow(Time).to receive(:now).and_return(now)
+    first = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 60)
+    expect(described_class.find_active_by_idempotency_key(key, now: now + 59).id).to eq(first.id)
+    expect(described_class.find_active_by_idempotency_key(key, now: now + 60)).to be_nil
+
+    allow(Time).to receive(:now).and_return(now + 60)
+    replacement = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 120)
+    expect(replacement.id).not_to eq(first.id)
+    expect(replacement.idempotency_expires_at).to eq(now + 180)
+  end
+
+  it 'derives a stable key from the explicit payload rather than unrelated model values' do
+    first = described_class.create_idempotent({ status: 'pending' }, payload: { b: 2, a: 1 })
+    duplicate = described_class.create_idempotent({ status: 'running' }, payload: { 'a' => 1, 'b' => 2 })
+    expect(duplicate.id).to eq(first.id)
+    expect(duplicate.status).to eq('pending')
+  end
+
+  it 'retains task log evidence when a task is removed' do
+    task = described_class.create(status: 'completed')
+    record = Legion::Data::Model::TaskLog.create(task_id: task.id, entry: 'completed work')
+    task.delete
+
+    persisted = Legion::Data::Model::TaskLog[uuid: record[:uuid]]
     expect(persisted.values).to include(task_id: nil, entry: 'completed work')
-  ensure
-    Legion::Data::Model::TaskLog.where(id: record.id).delete if record
   end
 
-  it 'allows the same execution key after an unrelated foreign-key failure' do
+  it 'allows the same idempotency key after an unrelated foreign-key failure' do
     expect do
-      described_class.create_idempotent(values: { function_id: -1 }, idempotency_key: @execution_key)
+      described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
     end.to raise_error(Sequel::ForeignKeyConstraintViolation)
-    task = described_class.create_idempotent(values: {}, idempotency_key: @execution_key)
-    expect(described_class.where(execution_key: @execution_key).select_map(:id)).to eq([task[:id]])
+    task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])
   end
 
   it 'canonicalizes equivalent frozen instants without mutating caller timezone' do
     local = Time.new(2026, 10, 30, 12, 0, 0, '+05:30').freeze
     utc = local.getutc.freeze
-    expect(described_class.idempotency_key_for(payload: { at: local })).to eq(described_class.idempotency_key_for(payload: { at: utc }))
+    expect(described_class.idempotency_key_for({ at: local })).to eq(described_class.idempotency_key_for({ at: utc }))
     expect(local.utc_offset).to eq(19_800)
   end
 end

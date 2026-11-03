@@ -11,16 +11,21 @@ module Legion
         include Legion::Logging::Helper
 
         def archive_to_warm(table:, age_days: 90, batch_size: 1000)
-          return { archived: 0, reason: 'no_connection' } unless Legion::Data.connection
-          return { archived: 0, reason: 'no_archive_table' } unless Legion::Data.connection.table_exists?(:data_archive)
+          db = Legion::Data.connection
+          return { archived: 0, reason: 'no_connection' } unless db
+          return { archived: 0, reason: 'no_archive_table' } unless db.table_exists?(:data_archive)
 
+          table = table.to_sym
           cutoff = Time.now - (age_days * 86_400)
-          records = Legion::Data.connection[table].where { created_at < cutoff }.limit(batch_size).all
-          return { archived: 0 } if records.empty?
+          archived = db.transaction(savepoint: true, **(db.database_type == :sqlite ? { mode: :immediate } : {})) do
+            candidates = db[table].where { created_at < cutoff }.order(:id).limit(batch_size)
+            candidates = candidates.where(execution_key: nil) if table == :tasks
+            candidates = candidates.for_update unless db.database_type == :sqlite
+            records = candidates.all
+            next 0 if records.empty?
 
-          Legion::Data.connection.transaction do
             records.each do |record|
-              Legion::Data.connection[:data_archive].insert(
+              db[:data_archive].insert(
                 source_table: table.to_s, source_id: record[:id],
                 data:         Legion::JSON.dump(record),
                 tier:         TIERS[:warm],
@@ -29,11 +34,12 @@ module Legion
             end
 
             ids = records.map { |r| r[:id] }
-            Legion::Data.connection[table].where(id: ids).delete
+            db[table].where(id: ids).delete
           end
+          return { archived: 0 } if archived.zero?
 
-          log.info "Archived #{records.size} row(s) from #{table} to warm tier"
-          { archived: records.size, table: table.to_s }
+          log.info "Archived #{archived} row(s) from #{table} to warm tier"
+          { archived: archived, table: table.to_s }
         rescue StandardError => e
           handle_exception(e, level: :error, handled: false, operation: :archive_to_warm, table: table, age_days: age_days, batch_size: batch_size)
           raise

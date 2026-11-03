@@ -4,9 +4,8 @@ source 'https://rubygems.org'
 
 gemspec
 
-local_root = File.directory?(File.expand_path('.ci-dependencies', __dir__)) ? File.expand_path('.ci-dependencies', __dir__) : File.expand_path('..', __dir__)
-settings_path = File.join(local_root, 'legion-settings')
-gem 'legion-settings', path: settings_path if File.file?(File.join(settings_path, 'legion-settings.gemspec'))
+settings_path = File.expand_path('../legion-settings', __dir__)
+gem 'legion-settings', path: settings_path if File.directory?(settings_path)
 
 group :test do
   gem 'rake'

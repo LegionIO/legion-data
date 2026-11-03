@@ -1,20 +1,20 @@
 # Legion::Data Changelog
 
-## [1.11.0] - 2026-10-30
+## [1.11.0] - 2026-11-03
 
 ### Added
-- Transactional `Legion::Data::TaskExecution` logical-task creation, renewable owned attempts, compare-and-set lifecycle transitions, bounded retries, task/parent cancellation and deadline checks, and durable dispatch intents.
+- Opt-in transactional `Legion::Data::Task::Execution` logical-task creation, renewable owned attempts, compare-and-set lifecycle transitions, bounded retries, task/parent cancellation and deadline checks, and durable dispatch intents for database-owning components. Ordinary RabbitMQ workers acquire no database dependency.
 - Additive migrations 139–141 introduce nullable unique execution identities, task execution metadata, `task_attempts`, and `task_dispatches`. Historical duplicate idempotency keys remain valid.
 - Durable outbox claims, owner-checked acknowledgements, recoverable releases, and terminal discards distinguish accepted publication from undelivered or cancelled work.
-- Migration 142 provisions `task_logs` and registers its model, with generated UUIDs and retained log evidence when parent records are removed. Unsupported manually created tables fail safely without data loss and require operator reconciliation.
-- Migration 143 preserves execution fields in the task archive schema. Automatic archival retains canonical execution rows and their attempts; legacy task rows remain archivable. Idempotency TTL bounds active lookup, not durable identity retention.
-- Migration 144 adds server-owned `execution_policy` JSON text to tasks and task archives. Creation snapshots lease/heartbeat and retry bounds; legacy rows capture them atomically on first claim. Claims expose immutable decoded policy, and renewals/retries honor it across differently configured workers.
+- Migration 142 provisions `task_logs` and registers its model. Both existing `TaskLog.insert` call shapes initialize UUIDs and event timestamps while preserving the integer return value; deleting parent records retains log evidence. Unsupported manually created tables fail without data loss and require operator reconciliation.
+- Migration 143 adds execution fields, including `execution_policy`, to the existing task archive. Every automatic archival path retains durable execution rows and their attempts; legacy rows remain archivable.
+- Migration 144 adds only `tasks.execution_policy`. Creation snapshots lease/heartbeat and retry bounds; legacy rows capture them atomically on first claim. Claims expose immutable decoded policy, and renewals/retries honor it across differently configured callers.
 
 ### Changed
-- Data owns immutable persisted task/dispatch statuses independently of Transport and Core. Local execution/outbox defaults live under `data.task_execution`, registered through the generic `legion-settings >= 1.4.5` library API without resetting live connection state. Persisted policy and absolute timestamps, not later worker settings, govern existing durable tasks.
-- Task idempotency model methods use keyword arguments and return plain hashes. Replays retain the original logical task even after terminal completion or TTL expiry; producers must use distinct keys for new occurrences.
-- Expired ambiguous attempts become terminal `unknown` outcomes instead of repeating potentially completed external effects. Completion and successful continuation intent commit together.
-- Normalize incoming UTC/offset `Time` values at the new persistence boundaries so deadlines, leases, delayed-task creation, and log event times retain their absolute instant under Sequel's default timezone behavior, without rewriting historical data.
+- `Legion::Data::Task::Status` owns immutable persisted identities independently of Transport and Core, including scheduled tasks and terminal transformer exceptions. Local execution/outbox defaults live under `data.task_execution`, registered through `legion-settings >= 1.4.5` without resetting live connection state.
+- Preserve existing Task idempotency helpers: positional arguments, Sequel model returns, historical key lookup, optional TTL, and key reuse after terminal completion or expiry. The separate durable API retains permanent execution identities; frozen timestamp payloads are canonicalized without mutation.
+- Expired ambiguous attempts become terminal `unknown` rather than repeating potentially completed external effects. Task creation, attempt completion, and dispatch intents use savepoints, so a caller catching an error cannot commit a partial operation.
+- Scope durable task, attempt, retry, and outbox timestamps to UTC across worker timezones. Restore caller timezone settings after success or failure without changing global defaults or historical rows.
 - Read runtime configuration from the live `Legion::Settings[:data]` tree, including TLS, local migration permission, archival policy, and cache TTL. Register defaults once at library boot; execution-policy validation no longer bootstraps or resets settings during reads, and invalid configured policies are not silently replaced.
 
 ## [1.10.28] - 2026-10-30

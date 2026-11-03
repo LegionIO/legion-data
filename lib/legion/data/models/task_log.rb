@@ -10,6 +10,10 @@ module Legion
         many_to_one :node
         many_to_one :function
 
+        def self.insert(values)
+          create(values).id
+        end
+
         def before_create
           self[:uuid] ||= SecureRandom.uuid
           self[:created] ||= Time.now
