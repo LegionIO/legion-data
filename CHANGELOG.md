@@ -11,6 +11,7 @@
 - Preserve existing Task idempotency helpers: positional arguments, Sequel model returns, historical key lookup, optional TTL, and key reuse after terminal completion or expiry. Recognize canonical namespaced terminal statuses as well as legacy statuses, so completed runtime tasks do not retain active keys. Frozen timestamp payloads are canonicalized without mutation.
 - Retain ordinary task archival eligibility without execution-specific exclusions.
 - Read runtime configuration from the live `Legion::Settings[:data]` tree, including TLS, local migration permission, archival policy, and cache TTL. Register defaults once at library boot without resetting live connection state during reads.
+- Define connection defaults directly in `Settings.default`, following the framework's method-returned settings Hash pattern; remove `CONNECTION_DEFAULTS`.
 
 ## [1.10.28] - 2026-10-30
 
