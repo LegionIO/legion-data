@@ -47,6 +47,17 @@ RSpec.describe Legion::Data::Model::Task do
     expect(described_class.find_active_by_idempotency_key(key).id).to eq(next_occurrence.id)
   end
 
+  it 'reuses a namespaced completed task key while retaining the next active occurrence' do
+    completed = described_class.create_idempotent({ status: 'task.completed' }, idempotency_key: key)
+    expect(described_class.find_active_by_idempotency_key(key)).to be_nil
+
+    running = described_class.create_idempotent({ status: 'task.running' }, idempotency_key: key)
+    duplicate = described_class.create_idempotent({ status: 'task.queued' }, idempotency_key: key)
+    expect(running.id).not_to eq(completed.id)
+    expect(duplicate.values).to include(id: running.id, status: 'task.running')
+    expect(described_class[completed.id].status).to eq('task.completed')
+  end
+
   it 'allows key reuse at the explicit TTL boundary' do
     now = Time.local(2026, 11, 3, 12)
     allow(Time).to receive(:now).and_return(now)

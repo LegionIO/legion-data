@@ -215,132 +215,18 @@ Supported formats: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.xlsx`, `
 When migration 076 is present, Extract also persists the same per-step timing rows to `extract_step_timings`
 under the returned `extract_id`.
 
-### Durable Task Execution
+### Task Persistence
 
-`require 'legion/data/task/execution'` exposes the opt-in transactional task API for
-database-owning components. A LEX using it must declare `data_required?` as true. Ordinary
-workers remain RabbitMQ clients: they do not need a database connection and must not call
-this API directly. Database-owning components persist coordination state and dispatch
-intents; workers exchange commands, ownership metadata, heartbeats, and results over AMQP.
-This API does not replace RabbitMQ or automatically enable durable execution for existing workers.
+`Legion::Data::Model::Task` is the normal Sequel model for task persistence.
+The message-processing contract assumes RabbitMQ prefetch of one: each persistence message
+performs one model insert or update, and the runtime acknowledges the message only after
+that operation succeeds. A failed write must not be acknowledged as successful.
+Data does not add message batching, attempt ownership, leases, or outbox coordination.
 
-Run migrations 139–144 before using it. Each call uses the current `Legion::Data.connection`.
-Operations use savepoints inside caller transactions: a caught operation failure rolls back
-its task, attempt, and dispatch changes without preventing unrelated caller work from committing.
-An outer rollback still rolls back successful nested operations. SQLite uses immediate write
-transactions; other adapters use row locks, and lifecycle updates compare the persisted version.
+Task statuses retain their existing persisted identities in `Legion::Data::Task::Status`.
+Task rows follow the ordinary archival age, status, and dependency rules.
 
-The durable API stores and reads timestamps in UTC using scoped Sequel thread-local timezone
-settings, including task deadlines, attempt leases, retries, and dispatch leases. Leave the
-connection's own `timezone` unset or set it to `:utc`. Different process timezones do not change
-these instants; caller timezone settings are restored after nested calls and exceptions.
-Global Sequel defaults, legacy model behavior, and historical rows are not rewritten.
-
-```ruby
-extend Legion::Data::Task::Status::Helper
-created = Legion::Data::Task::Execution.create_task(
-  values: { status: task_status(name: :queued), function_args: { item_id: 42 } },
-  idempotency_key: 'parent:relationship:fanout-index',
-  dispatch: {
-    event_key: 'parent:relationship:fanout-index:dispatch',
-    message_type: 'task',
-    options: { function: 'perform', args: { item_id: 42 } }
-  }
-)
-created[:task] # Plain Hash, never a Sequel model; actual task_id is injected into dispatch options.
-```
-
-All durable execution functions use keyword arguments:
-
-| Operation | Return |
-|-----------|--------|
-| `create_task(values:, idempotency_key:, dispatch: nil)` | `{created:, task:}` |
-| `claim_task(task_id:, owner:, now: Time.now)` | `{claimed:, task:, token:, attempt_id:, reason:, policy:}` |
-| `renew_task_lease(task_id:, token:, now: Time.now)` | `{renewed:, task:}` |
-| `transition_task(task_id:, status:, expected_status: nil, token: nil, values: {})` | `{changed:, task:, reason:}` |
-| `complete_task(task_id:, status:, result:, token: nil, continuation: nil)` | `{changed:, task:}` |
-| `enqueue_dispatch(event_key:, message_type:, options:, task_id: nil)` | `{created:, dispatch:}` |
-| `enqueue_task_dispatch(task_id:, event_key:, message_type:, options:, expected_status:)` | `{created:, dispatch:}` |
-| `claim_dispatches(owner:, limit: nil, now: Time.now)` | Array of dispatch Hashes including `id`, `token`, `message_type`, decoded `options`, and `task_id` |
-| `ack_dispatch(dispatch_id:, token:)` / `release_dispatch(dispatch_id:, token:, error:)` | `{changed:}` |
-| `discard_dispatch(dispatch_id:, token:, reason:)` | `{changed:, dispatch:}` |
-
-Unique `tasks.execution_key` and `task_dispatches.event_key` enforce logical identity under
-concurrency. Repeated creation returns the original task, including its terminal outcome.
-TTL is retention metadata, **not permission to repeat an external effect**: new schedule
-occurrences or intentional executions must have new keys. Historical `idempotency_key`
-duplicates are not modified or constrained by the new nullable unique execution key.
-
-The configured `execution.idempotency_ttl_seconds` sets metadata on durable tasks; it does
-not expire their execution identity or change the separate legacy model helpers below.
-Automatic warm, generic retention, and cold archival retain rows with `execution_key` and
-their attempts. Storage therefore grows with unique durable executions so archival cannot
-silently turn deduplication into re-execution. Legacy rows without an execution key remain
-archivable. Migration 143 adds execution fields, including `execution_policy`, to the existing
-task archive; migration 144 adds only `tasks.execution_policy`.
-Claims persist an attempt and an unguessable execution token. Live owners cannot be replaced;
-long-running owners must heartbeat with `renew_task_lease` before their lease expires.
-Renewal updates the task and attempt together and cannot revive expired or terminal claims.
-Expired ambiguous attempts become terminal `unknown`, requiring explicit reconciliation
-rather than automatic re-execution. Cancellation and deadlines are checked before claiming,
-transitioning, completing, and promoting delayed or scheduled tasks. Delayed/scheduled tasks
-cannot be claimed before their scheduler promotes them. Terminal outcomes reject late updates,
-including `transformer.exception`.
-Only the owner of a known failed attempt may request `retry_pending`, subject to persisted
-attempt limits and exponential backoff. `complete_task` can record a retry atomically when
-given `status: retry_pending` and a result with `success: false` and canonical `failed` or
-`exception` status; exhausted attempts remain terminal failures. The caller must restrict
-retries to operations known to be safe. A successful completion may include a continuation
-descriptor with the same shape as `dispatch`; the outcome and intent are one transaction.
-
-Dispatch delivery is **at least once**, not exactly once. A relay must use confirmed publication,
-acknowledge only accepted messages, and release rejected publications. A crash after publish
-but before acknowledgement causes lease-based republication; downstream logical-task
-identity prevents duplicate execution. `discard_dispatch` permanently records cancellation
-without claiming delivery. `delivered_at` means publication was accepted, not that the target
-completed. Pending intents remain durable across connection/process replacement.
-
-Local policy comes from `Legion::Data::Settings::Helper#data_task_execution_settings` and
-`Legion::Settings[:data][:task_execution]` (requires `legion-settings >= 1.4.5`). Its defaults are:
-
-```ruby
-{
-  execution: { lease_seconds: 60, heartbeat_seconds: 20, idempotency_ttl_seconds: 86_400 },
-  retry: { max_attempts: 3, base_delay_seconds: 1, max_delay_seconds: 30 },
-  outbox: { lease_seconds: 30, batch_size: 100 }
-}
-```
-
-These are process-local defaults, not distributed authority. Creation persists `execution_policy`
-as JSON text; a legacy row with null policy captures it atomically on its first successful claim.
-The column is server-owned: callers cannot supply or transition it. Each successful claim adds
-the immutable decoded `policy` Hash below without removing any previous response keys:
-
-```ruby
-{
-  execution: { lease_seconds: 60, heartbeat_seconds: 20 },
-  retry: { max_attempts: 3, base_delay_seconds: 1, max_delay_seconds: 30 }
-}
-```
-
-Database-owning coordinators use the claimed heartbeat interval. Claiming, renewal, retry limits
-and backoff use the stored snapshot even if a later caller has different local settings. Unsuccessful legacy claims
-may return `policy: nil` until first claim. Persisted absolute expiry, lease and retry timestamps
-remain authoritative; changing local policy does not reinterpret them. Outbox lease/batch policy
-applies to new relay claims, not the expiry of an existing claim.
-
-`require 'legion/data/task/status'` exposes independent, immutable persisted identities in
-`Legion::Data::Task::Status`, with `STATUSES`, `TERMINAL_STATUSES`, `LEGACY_TERMINAL_STATUSES` and
-`Helper#task_status(name:)` / `#task_terminal_status?(status:)`. Outbox identities are fixed in
-`Legion::Data::Task::Execution::DISPATCH_STATUSES`. No settings override can rename persisted
-statuses or redefine terminal outcomes. Data requires neither Transport nor Core; matching
-wire labels are an explicit schema/protocol agreement, not a dependency.
-
-`results`, `payload`, `function_args`, and `transformation_result` accept Hash/Array input and
-remain JSON text in returned task rows; decode them with `Legion::JSON.load`. Dispatch `options`
-is decoded for the relay. No publication fallback is hidden inside this storage API.
-
-The existing model API is unchanged:
+The existing model idempotency API is unchanged:
 
 - `Legion::Data::Model::Task.idempotency_key_for(payload)` computes a stable SHA-256 key from canonical JSON.
 - `create_idempotent(values, payload: nil, idempotency_key: nil, ttl: nil)` accepts a positional
@@ -348,17 +234,17 @@ The existing model API is unchanged:
 - `find_active_by_idempotency_key(key, now: Time.now)` reads the original `idempotency_key`
   column and returns a Sequel model or nil. Terminal tasks and expired keys allow a new occurrence.
 
-These legacy helpers do not use the new durable creation path or promise its concurrent,
-permanent execution identity. Frozen timestamp payloads are canonicalized without mutation.
+These helpers do not promise concurrent deduplication or permanent execution identity.
+Frozen timestamp payloads are canonicalized without mutation.
 
-Migration 142 supplies the previously unprovisioned `task_logs` table and the normal model
+Migration 139 supplies the previously unprovisioned `task_logs` table and the normal model
 loader registers `Legion::Data::Model::TaskLog`. Both `TaskLog.create` and `TaskLog.insert`
 generate its public UUID and retain supplied event timestamps. `insert` supports the existing
 positional Hash and keyword-Hash call shapes and returns the inserted integer ID; `create`
 returns a model. Entries are text and may reference a task, node, or function. Removing those
 referenced records nulls the reference rather than deleting the
 log evidence. An unsupported manually created `task_logs` table requires operator
-reconciliation before upgrading: migration 142 fails safely if it already exists and never
+reconciliation before upgrading: migration 139 fails safely if it already exists and never
 overwrites, truncates, or automatically adopts existing logs.
 
 ### Serialized Audit and Governance Appends

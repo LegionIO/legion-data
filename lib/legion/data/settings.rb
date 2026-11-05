@@ -108,7 +108,6 @@ module Legion
           connect_on_start: true,
           read_replica_url: nil,
           replicas:         [],
-          task_execution:   task_execution,
           archival:         archival
         )
       end
@@ -152,37 +151,6 @@ module Legion
           tables:          %w[tasks metering_records],
           storage_backend: nil
         }
-      end
-
-      def self.task_execution
-        {
-          execution: { lease_seconds: 60, heartbeat_seconds: 20, idempotency_ttl_seconds: 86_400 },
-          retry:     { max_attempts: 3, base_delay_seconds: 1, max_delay_seconds: 30 },
-          outbox:    { lease_seconds: 30, batch_size: 100 }
-        }
-      end
-
-      module Helper
-        def data_task_execution_settings
-          policy = Legion::Settings[:data].fetch(:task_execution)
-          { execution: %i[lease_seconds heartbeat_seconds idempotency_ttl_seconds],
-            retry: %i[max_attempts base_delay_seconds max_delay_seconds], outbox: %i[lease_seconds batch_size] }.each do |section, keys|
-            keys.each do |key|
-              value = policy.fetch(section).fetch(key)
-              next if value.is_a?(Integer) && value.positive?
-
-              raise ArgumentError, "data.task_execution.#{section}.#{key} must be a positive Integer"
-            end
-          end
-          if policy[:execution][:heartbeat_seconds] >= policy[:execution][:lease_seconds]
-            raise ArgumentError, 'data.task_execution.execution.heartbeat_seconds must be < lease_seconds'
-          end
-          if policy[:retry][:max_delay_seconds] < policy[:retry][:base_delay_seconds]
-            raise ArgumentError, 'data.task_execution.retry.max_delay_seconds must be >= base_delay_seconds'
-          end
-
-          policy
-        end
       end
 
       def self.cache

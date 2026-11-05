@@ -116,7 +116,6 @@ module Legion
 
         def archive_batch(conn:, table:, cutoff:, batch_size:, now:, storage_backend:)
           candidates = conn[table].where { created_at < cutoff }.limit(batch_size)
-          candidates = candidates.where(execution_key: nil) if table.to_sym == :tasks
           rows = candidates.all
           return if rows.empty?
 

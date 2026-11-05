@@ -19,7 +19,6 @@ module Legion
           cutoff = Time.now - (age_days * 86_400)
           archived = db.transaction(savepoint: true, **(db.database_type == :sqlite ? { mode: :immediate } : {})) do
             candidates = db[table].where { created_at < cutoff }.order(:id).limit(batch_size)
-            candidates = candidates.where(execution_key: nil) if table == :tasks
             candidates = candidates.for_update unless db.database_type == :sqlite
             records = candidates.all
             next 0 if records.empty?
