@@ -14,8 +14,11 @@ RSpec.describe 'Concurrent database appends' do
       end
       @database = Sequel.sqlite(File.join(directory, 'appends.db'), **options)
       Sequel::Migrator.run(@database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
+      original_event_dataset = Legion::Data::Model::GovernanceEvent.dataset
+      Legion::Data::Model::GovernanceEvent.set_dataset(@database[:governance_events])
       example.run
     ensure
+      Legion::Data::Model::GovernanceEvent.set_dataset(original_event_dataset) if original_event_dataset
       @database&.disconnect
     end
   end

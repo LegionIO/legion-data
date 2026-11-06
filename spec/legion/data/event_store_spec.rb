@@ -11,6 +11,7 @@ RSpec.describe Legion::Data::EventStore do
   end
 
   after do
+    Legion::Data::Model::GovernanceEvent.set_dataset(@original_event_dataset) if @original_event_dataset
     db.disconnect if defined?(db) && db
   end
 
@@ -45,8 +46,8 @@ RSpec.describe Legion::Data::EventStore do
 
   context 'with a live database' do
     before do
-      allow(Legion::Data).to receive(:connection).and_return(db)
-      allow(described_class).to receive(:db_ready?).and_return(true)
+      @original_event_dataset = Legion::Data::Model::GovernanceEvent.dataset
+      Legion::Data::Model::GovernanceEvent.set_dataset(db[:governance_events])
     end
 
     it 'round-trips data and metadata through append and read_stream' do

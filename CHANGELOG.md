@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.2] - 2026-11-05
+
+### Changed
+- Register the `GovernanceEvent` Sequel model and use it for event-store appends, reads, and chain verification instead of direct table access. Preserve existing stream locking, sequence numbering, and hash-chain behavior.
+
 ## [1.11.1] - 2026-11-05
 
 ### Changed
