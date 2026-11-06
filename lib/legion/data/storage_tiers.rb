@@ -15,6 +15,8 @@ module Legion
 
           table = model.table_name
           db = model.db
+          raise ArgumentError, 'source model must use the DataArchive database' unless db.equal?(Legion::Data::Model::DataArchive.db)
+
           cutoff = Time.now - (age_days * 86_400)
           archived = db.transaction(savepoint: true, **(db.database_type == :sqlite ? { mode: :immediate } : {})) do
             candidates = model.where { created_at < cutoff }.order(:id).limit(batch_size)

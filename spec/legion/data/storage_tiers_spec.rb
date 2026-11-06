@@ -24,6 +24,26 @@ RSpec.describe Legion::Data::StorageTiers do
       expect(result).to eq(archived: 0, reason: 'no_connection')
     end
 
+    it 'rejects a source model on another database without moving its rows' do
+      original_dataset = Legion::Data::Model::Task.dataset
+      other = Sequel.sqlite
+      other.create_table(:tasks) do
+        primary_key :id
+        String :status
+        DateTime :created_at
+      end
+      Legion::Data::Model::Task.set_dataset(other[:tasks])
+      task = Legion::Data::Model::Task.create(status: 'task.completed', created_at: Time.now - (120 * 86_400))
+
+      expect { described_class.archive_to_warm(model: Legion::Data::Model::Task) }
+        .to raise_error(ArgumentError, 'source model must use the DataArchive database')
+      expect(Legion::Data::Model::Task[task.id].values).to eq(task.values)
+      expect(Legion::Data::Model::DataArchive.count).to eq(0)
+    ensure
+      Legion::Data::Model::Task.set_dataset(original_dataset)
+      other&.disconnect
+    end
+
     it 'archives ordinary tasks using their age and batch limit' do
       old = Time.now - (120 * 86_400)
       first = Legion::Data::Model::Task.create(created: old, created_at: old, status: 'task.completed')

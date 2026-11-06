@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.6] - 2026-11-05
+
+### Fixed
+- Reject storage-tier source models connected to a different database before moving rows, preserving the single-database transaction boundary.
+
 ## [1.11.5] - 2026-11-05
 
 ### Changed
