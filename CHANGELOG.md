@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.4] - 2026-11-05
+
+### Changed
+- Register the `AppendClaim` Sequel model and use it for database append locks instead of direct table access. Audit and event callers now supply only the claim key; retain existing transaction and adapter-specific locking behavior.
+
 ## [1.11.3] - 2026-11-05
 
 ### Changed

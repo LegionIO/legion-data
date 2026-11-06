@@ -22,8 +22,7 @@ module Legion
           return { error: 'db unavailable' } unless db_ready?
 
           database = Legion::Data::Model::GovernanceEvent.db
-          Legion::Data::DatabaseLock.with_claim(database: database, table: :append_claims,
-                                                key: { kind: 'event', stream_id: stream }) do
+          Legion::Data::DatabaseLock.with_claim(key: { kind: 'event', stream_id: stream }) do
             records = Legion::Data::Model::GovernanceEvent.where(stream_id: stream).order(Sequel.desc(:sequence_number))
             records = records.for_update unless database.database_type == :sqlite
             last = records.first

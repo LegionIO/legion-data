@@ -18,10 +18,13 @@ RSpec.describe 'Concurrent database appends' do
       Legion::Data::Model::GovernanceEvent.set_dataset(@database[:governance_events])
       original_audit_dataset = Legion::Data::Model::AuditRecord.dataset
       Legion::Data::Model::AuditRecord.set_dataset(@database[:audit_records])
+      original_claim_dataset = Legion::Data::Model::AppendClaim.dataset
+      Legion::Data::Model::AppendClaim.set_dataset(@database[:append_claims])
       example.run
     ensure
       Legion::Data::Model::GovernanceEvent.set_dataset(original_event_dataset) if original_event_dataset
       Legion::Data::Model::AuditRecord.set_dataset(original_audit_dataset) if original_audit_dataset
+      Legion::Data::Model::AppendClaim.set_dataset(original_claim_dataset) if original_claim_dataset
       @database&.disconnect
     end
   end

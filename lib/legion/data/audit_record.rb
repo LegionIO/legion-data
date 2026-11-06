@@ -23,8 +23,7 @@ module Legion
         def append(chain_id:, content_type:, content_hash:, metadata: {}, sign: false)
           return { error: 'db unavailable' } unless Legion::Data.connected?
 
-          Legion::Data::DatabaseLock.with_claim(database: Legion::Data::Model::AuditRecord.db, table: :append_claims,
-                                                key: { kind: 'audit', stream_id: chain_id }) do
+          Legion::Data::DatabaseLock.with_claim(key: { kind: 'audit', stream_id: chain_id }) do
             parent_hash = latest_chain_hash(chain_id: chain_id)
             ts          = truncate_to_us(Time.now)
             ch          = compute_chain_hash(parent_hash, content_hash, ts, content_type)
