@@ -1,8 +1,8 @@
 # legion-data
 
-Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations (97 numbered migrations), Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
+Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), numbered schema migrations, Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.18 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.11.6 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -24,6 +24,30 @@ Core responsibilities:
 The schema is portable by default across SQLite, MySQL, and PostgreSQL. PostgreSQL-only behavior is isolated to features that need PostgreSQL, such as Apollo vector columns.
 
 `Legion::Data.setup` raises on fatal connection configuration, migration, or model-loading failures rather than announcing successful startup. Failed setup closes its database connections and clears readiness; fix the underlying error before retrying. Local migrations registered after startup also propagate failures and leave the local database disconnected until setup succeeds.
+
+## Framework Conventions
+
+### Startup and Table Ownership
+
+The shared database starts in this order: **connect → run migrations → load models → mark Data connected**. Cache setup and local storage setup follow. Application code uses the models registered by that lifecycle; model declarations must not be loaded before their tables are migrated.
+
+A table belongs to the component that creates and maintains its schema. A reference in an existing helper does not establish ownership. Before adding a model, identify the owning migration and its supported adapters. A PostgreSQL-only migration does not create its table on SQLite or MySQL.
+
+### Model-backed Table Access
+
+- Read and write application tables through named Sequel models, such as `Legion::Data::Model::Task`, rather than `connection[:tasks]` or `db[:tasks]`.
+- If a Data-owned table is used but lacks a model, add a normal named class under `lib/legion/data/models/` and register it in `Legion::Data::Models.models`.
+- Use the existing model namespace and association conventions. Do not replace named models with `Class.new`, anonymous models, or a facade around raw table access.
+- Shared operations can accept an explicit source model rather than infer a class from a table name. Keep transactional source and destination models on the same database.
+- Keep model instances within database operations. Return plain Hashes across module boundaries, using `.values` or an explicit result Hash.
+
+Migrations and database infrastructure still need direct Sequel database operations for schema changes, connection setup, and adapter/session management. Those operations are distinct from application-table reads and writes.
+
+### Settings
+
+Keep method-returned settings defaults in the existing methods, including `Legion::Data::Settings.default`. Do not extract that settings tree into a constant such as `CONNECTION_DEFAULTS`, a class variable, or a memoized snapshot.
+
+Register defaults through Legion Settings at library startup. Runtime code reads the current `Legion::Settings[:data]` values so configured overrides and settings reloads remain authoritative. Follow the framework's existing loading and access patterns rather than adding a second settings mechanism.
 
 ## Supported Databases
 
@@ -75,7 +99,7 @@ Legion::Data (singleton module)
 │   ├── .stats          # Pool metrics, tuning snapshot, adapter-specific DB stats
 │   └── .shutdown       # Drain accepted work; return true only after cleanup
 │
-├── Migration           # Auto-migration system (97 numbered Sequel DSL migrations)
+├── Migration           # Numbered Sequel DSL migrations
 │
 ├── Model               # Sequel model autoloader
 │   └── Models: Extension, Function, Runner, Node, Task, TaskLog, Setting,
@@ -627,7 +651,7 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 
 ## Migrations
 
-97 numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). Key milestones:
+Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). The files in `lib/legion/data/migrations/` are the authoritative inventory. Key milestones:
 
 | Range | What was added |
 |-------|---------------|
