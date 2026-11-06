@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.5] - 2026-11-05
+
+### Changed
+- Register the `DataArchive` Sequel model and use it for warm/cold storage operations. `StorageTiers.archive_to_warm` now accepts the source `model:` instead of `table:`; source selection and deletion use that model, and exported rows remain plain Hashes.
+
 ## [1.11.4] - 2026-11-05
 
 ### Changed

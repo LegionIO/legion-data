@@ -13,7 +13,7 @@ module Legion
         def models
           %w[extension function relationship chain task task_log runner node setting digital_worker
              apollo_entry apollo_relation apollo_expertise apollo_access_log audit_log
-             audit_record governance_event append_claim extract_step_timing
+             audit_record governance_event append_claim data_archive extract_step_timing
              identity/identity identity/principal identity/providers identity/group
              identity/group_memberships identity/audit_log
              apollo/entries apollo/relation apollo/access_log apollo/expertise

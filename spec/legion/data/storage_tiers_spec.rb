@@ -5,83 +5,89 @@ require 'legion/data/storage_tiers'
 require 'sequel/extensions/migration'
 
 RSpec.describe Legion::Data::StorageTiers do
+  around do |example|
+    @database = Sequel.sqlite
+    Sequel::Migrator.run(@database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
+    original_datasets = [Legion::Data::Model::Task, Legion::Data::Model::GovernanceEvent,
+                         Legion::Data::Model::DataArchive].to_h { |model| [model, model.dataset] }
+    original_datasets.each_key { |model| model.set_dataset(@database[model.table_name]) }
+    example.run
+  ensure
+    original_datasets&.each { |model, dataset| model.set_dataset(dataset) }
+    @database&.disconnect
+  end
+
   describe '.archive_to_warm' do
     it 'returns zero when no connection' do
-      allow(Legion::Data).to receive(:connection).and_return(nil)
-      result = described_class.archive_to_warm(table: :tasks)
-      expect(result[:archived]).to eq(0)
-      expect(result[:reason]).to eq('no_connection')
+      allow(Legion::Data).to receive(:connected?).and_return(false)
+      result = described_class.archive_to_warm(model: Legion::Data::Model::Task)
+      expect(result).to eq(archived: 0, reason: 'no_connection')
     end
 
-    it 'returns zero when no archive table' do
-      conn = Legion::Data.connection
-      allow(conn).to receive(:table_exists?).with(:data_archive).and_return(false)
-      result = described_class.archive_to_warm(table: :tasks)
-      expect(result[:archived]).to eq(0)
-      expect(result[:reason]).to eq('no_archive_table')
+    it 'archives ordinary tasks using their age and batch limit' do
+      old = Time.now - (120 * 86_400)
+      first = Legion::Data::Model::Task.create(created: old, created_at: old, status: 'task.completed')
+      second = Legion::Data::Model::Task.create(created: old, created_at: old, status: 'task.completed')
+      recent = Legion::Data::Model::Task.create(created: Time.now, created_at: Time.now, status: 'task.completed')
+
+      expect(described_class.archive_to_warm(model: Legion::Data::Model::Task, batch_size: 1)).to eq(archived: 1, table: 'tasks')
+
+      expect(Legion::Data::Model::Task.select_map(:id)).to contain_exactly(second.id, recent.id)
+      archived = Legion::Data::Model::DataArchive.first(source_table: 'tasks', source_id: first.id)
+      expect(archived.tier).to eq(described_class::TIERS[:warm])
+      expect(Legion::JSON.load(archived.data)).to include(id: first.id, status: 'task.completed')
     end
 
-    context 'with an isolated migrated SQLite database' do
-      include Legion::Data::Task::Status::Helper
+    it 'archives another registered source model without losing row values' do
+      old = Time.now - (120 * 86_400)
+      first = Legion::Data::Model::GovernanceEvent.create(stream_id: 'first', event_type: 'test', sequence_number: 1,
+                                                          data_json: '{"value":"original"}', created_at: old)
+      second = Legion::Data::Model::GovernanceEvent.create(stream_id: 'second', event_type: 'test', sequence_number: 1, created_at: old)
+      recent = Legion::Data::Model::GovernanceEvent.create(stream_id: 'recent', event_type: 'test', sequence_number: 1, created_at: Time.now)
 
-      around do |example|
-        original = Legion::Data::Connection.instance_variable_get(:@sequel)
-        original_adapter = Legion::Data::Connection.instance_variable_get(:@adapter)
-        @database = Sequel.sqlite
-        begin
-          Sequel::Migrator.run(@database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
-          Legion::Data::Connection.instance_variable_set(:@sequel, @database)
-          Legion::Data::Connection.instance_variable_set(:@adapter, :sqlite)
-          example.run
-        ensure
-          Legion::Data::Connection.instance_variable_set(:@sequel, original)
-          Legion::Data::Connection.instance_variable_set(:@adapter, original_adapter)
-          @database.disconnect
-        end
-      end
+      expect(described_class.archive_to_warm(model: Legion::Data::Model::GovernanceEvent, batch_size: 1))
+        .to eq(archived: 1, table: 'governance_events')
+      expect(Legion::Data::Model::GovernanceEvent.select_map(:id)).to contain_exactly(second.id, recent.id)
+      archived = Legion::Data::Model::DataArchive.first(source_table: 'governance_events', source_id: first.id)
+      expect(Legion::JSON.load(archived.data)).to include(id: first.id, stream_id: 'first', data_json: '{"value":"original"}')
+      expect(archived.tier).to eq(described_class::TIERS[:warm])
+    end
 
-      it 'archives ordinary tasks using their age and batch limit' do
-        old = Time.now - (120 * 86_400)
-        legacy_id = @database[:tasks].insert(created: old, created_at: old, status: task_status(name: :completed))
-        second_id = @database[:tasks].insert(created: old, created_at: old, status: task_status(name: :completed))
-        recent_id = @database[:tasks].insert(created: Time.now, created_at: Time.now, status: task_status(name: :completed))
+    it 'rolls back the entire move when an archive insert fails' do
+      old = Time.now - (120 * 86_400)
+      first = Legion::Data::Model::Task.create(created: old, created_at: old, status: 'task.completed')
+      second = Legion::Data::Model::Task.create(created: old, created_at: old, status: 'task.completed')
+      @database.run("CREATE TRIGGER reject_archive BEFORE INSERT ON data_archive WHEN NEW.source_id = #{second.id} " \
+                    "BEGIN SELECT RAISE(ABORT, 'archive rejected'); END")
 
-        expect(described_class.archive_to_warm(table: 'tasks', batch_size: 1)).to eq(archived: 1, table: 'tasks')
-
-        expect(@database[:tasks].where(id: legacy_id).count).to eq(0)
-        expect(@database[:tasks].select_map(:id)).to contain_exactly(second_id, recent_id)
-        archived = @database[:data_archive].where(source_table: 'tasks', source_id: legacy_id).first
-        expect(archived[:tier]).to eq(described_class::TIERS[:warm])
-        expect(Legion::JSON.load(archived[:data])).to include(id: legacy_id, status: task_status(name: :completed))
-      end
-
-      it 'archives ordinary non-task rows using their age and batch limit' do
-        @database.create_table(:warm_items) do
-          primary_key :id
-          String :value
-          DateTime :created_at
-        end
-        old = Time.now - (120 * 86_400)
-        first_id = @database[:warm_items].insert(value: 'first', created_at: old)
-        second_id = @database[:warm_items].insert(value: 'second', created_at: old)
-        recent_id = @database[:warm_items].insert(value: 'recent', created_at: Time.now)
-
-        expect(described_class.archive_to_warm(table: :warm_items, batch_size: 1)).to eq(archived: 1, table: 'warm_items')
-
-        expect(@database[:warm_items].select_map(:id)).to contain_exactly(second_id, recent_id)
-        archived = @database[:data_archive].where(source_table: 'warm_items', source_id: first_id).first
-        expect(Legion::JSON.load(archived[:data])).to include(id: first_id, value: 'first')
-        expect(archived[:tier]).to eq(described_class::TIERS[:warm])
-      end
+      expect { described_class.archive_to_warm(model: Legion::Data::Model::Task) }.to raise_error(Sequel::DatabaseError, /archive rejected/)
+      expect(Legion::Data::Model::Task.select_map(:id)).to contain_exactly(first.id, second.id)
+      expect(Legion::Data::Model::DataArchive.count).to eq(0)
     end
   end
 
   describe '.export_to_cold' do
-    it 'returns zero when no archive table' do
-      conn = Legion::Data.connection
-      allow(conn).to receive(:table_exists?).with(:data_archive).and_return(false)
+    it 'returns zero when disconnected' do
+      allow(Legion::Data).to receive(:connected?).and_return(false)
+      expect(described_class.export_to_cold).to eq(exported: 0)
+    end
+
+    it 'returns plain archived hashes and moves only eligible warm rows to cold' do
+      old = Time.now - (400 * 86_400)
+      eligible = Legion::Data::Model::DataArchive.create(source_table: 'tasks', source_id: 1, data: '{"status":"task.completed"}',
+                                                         tier: described_class::TIERS[:warm], archived_at: old)
+      recent = Legion::Data::Model::DataArchive.create(source_table: 'tasks', source_id: 2, data: '{}',
+                                                       tier: described_class::TIERS[:warm], archived_at: Time.now)
+      cold = Legion::Data::Model::DataArchive.create(source_table: 'tasks', source_id: 3, data: '{}',
+                                                     tier: described_class::TIERS[:cold], archived_at: old)
+
       result = described_class.export_to_cold
-      expect(result[:exported]).to eq(0)
+
+      expect(result).to eq(exported: 1, data: [eligible.values])
+      expect(eligible.refresh.tier).to eq(described_class::TIERS[:cold])
+      expect(recent.refresh.tier).to eq(described_class::TIERS[:warm])
+      expect(cold.refresh.tier).to eq(described_class::TIERS[:cold])
+      expect(described_class.stats).to eq(warm: 1, cold: 2)
     end
   end
 end

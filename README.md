@@ -253,6 +253,16 @@ After migration 138, `AuditRecord.append` serializes each chain and `EventStore.
 
 Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
 
+### Model-backed Storage Tiers
+
+```ruby
+Legion::Data::StorageTiers.archive_to_warm(
+  model: Legion::Data::Model::Task, age_days: 90, batch_size: 1000
+)
+```
+
+Pass the source Sequel model using `model:`, not a table name. The source must have `id` and `created_at` columns and use the same database as `Legion::Data::Model::DataArchive`. Selected rows are copied as JSON and deleted in the existing transaction. `export_to_cold` returns plain archived-row hashes; `stats` reports warm/cold counts.
+
 ### Bounded Retention
 
 ```ruby
