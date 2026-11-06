@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.1] - 2026-11-05
+
+### Changed
+- Persist extraction step timings through the existing `ExtractStepTiming` Sequel model instead of direct connection queries and bulk inserts.
+
 ## [1.11.0] - 2026-11-03
 
 ### Added
