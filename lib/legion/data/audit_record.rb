@@ -21,18 +21,17 @@ module Legion
         # @param metadata     [Hash]    optional structured context (serialised to JSON)
         # @param sign         [Boolean] when true, attempt signing via legion-crypt
         def append(chain_id:, content_type:, content_hash:, metadata: {}, sign: false)
-          return { error: 'db unavailable' } unless db_ready?
+          return { error: 'db unavailable' } unless Legion::Data.connected?
 
-          conn = Legion::Data.connection
-          Legion::Data::DatabaseLock.with_claim(database: conn, table: :append_claims,
+          Legion::Data::DatabaseLock.with_claim(database: Legion::Data::Model::AuditRecord.db, table: :append_claims,
                                                 key: { kind: 'audit', stream_id: chain_id }) do
-            parent_hash = latest_chain_hash(conn, chain_id)
+            parent_hash = latest_chain_hash(chain_id: chain_id)
             ts          = truncate_to_us(Time.now)
             ch          = compute_chain_hash(parent_hash, content_hash, ts, content_type)
             sig         = sign ? sign_record(ch) : nil
             meta_json   = metadata.empty? ? nil : Legion::JSON.dump(metadata)
 
-            id = conn[:audit_records].insert(
+            record = Legion::Data::Model::AuditRecord.create(
               chain_id:     chain_id,
               content_type: content_type,
               content_hash: content_hash,
@@ -43,8 +42,8 @@ module Legion
               created_at:   ts
             )
 
-            log.debug "AuditRecord append: chain=#{chain_id} type=#{content_type} id=#{id}"
-            { id: id, chain_id: chain_id, chain_hash: ch, parent_hash: parent_hash }
+            log.debug "AuditRecord append: chain=#{chain_id} type=#{content_type} id=#{record.id}"
+            { id: record.id, chain_id: chain_id, chain_hash: ch, parent_hash: parent_hash }
           end
         end
 
@@ -54,12 +53,12 @@ module Legion
         # @param chain_id [String]
         # @return [Hash] { valid: Boolean, length: Integer, broken_at: Integer? }
         def verify(chain_id:)
-          return { valid: false, error: 'db unavailable' } unless db_ready?
+          return { valid: false, error: 'db unavailable' } unless Legion::Data.connected?
 
-          records = Legion::Data.connection[:audit_records]
-                                .where(chain_id: chain_id)
-                                .order(:id)
-                                .all
+          records = Legion::Data::Model::AuditRecord
+                    .where(chain_id: chain_id)
+                    .order(:id)
+                    .all
 
           prev_hash = GENESIS_HASH
           records.each do |r|
@@ -86,9 +85,9 @@ module Legion
         # @param since    [Time, nil] optional lower bound on created_at
         # @param limit    [Integer]
         def walk(chain_id:, since: nil, limit: 1000)
-          return [] unless db_ready?
+          return [] unless Legion::Data.connected?
 
-          ds = Legion::Data.connection[:audit_records].where(chain_id: chain_id)
+          ds = Legion::Data::Model::AuditRecord.where(chain_id: chain_id)
           ds = ds.where { created_at >= since } if since
           ds.order(:id).limit(limit).all.map { |r| deserialize(r) }
         end
@@ -99,9 +98,9 @@ module Legion
         # @param since        [Time, nil]
         # @param limit        [Integer]
         def query_by_type(content_type:, since: nil, limit: 100)
-          return [] unless db_ready?
+          return [] unless Legion::Data.connected?
 
-          ds = Legion::Data.connection[:audit_records].where(content_type: content_type)
+          ds = Legion::Data::Model::AuditRecord.where(content_type: content_type)
           ds = ds.where { created_at >= since } if since
           ds.order(Sequel.desc(:created_at)).limit(limit).all.map { |r| deserialize(r) }
         end
@@ -137,12 +136,12 @@ module Legion
           ::Time.at(Rational(us, 1_000_000))
         end
 
-        def latest_chain_hash(conn, chain_id)
-          records = conn[:audit_records]
+        def latest_chain_hash(chain_id:)
+          records = Legion::Data::Model::AuditRecord
                     .select(:chain_hash)
                     .where(chain_id: chain_id)
                     .order(Sequel.desc(:id))
-          records = records.for_update unless conn.database_type == :sqlite
+          records = records.for_update unless Legion::Data::Model::AuditRecord.db.database_type == :sqlite
           last = records.first
           last ? last[:chain_hash] : GENESIS_HASH
         end
@@ -168,13 +167,6 @@ module Legion
             metadata:     row[:metadata] ? Legion::JSON.load(row[:metadata]) : {},
             created_at:   row[:created_at]
           }
-        end
-
-        def db_ready?
-          defined?(Legion::Data) && Legion::Data.connection&.table_exists?(:audit_records)
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :audit_record_db_ready?)
-          false
         end
       end
     end

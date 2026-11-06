@@ -1,5 +1,10 @@
 # Legion::Data Changelog
 
+## [1.11.3] - 2026-11-05
+
+### Changed
+- Use the existing `AuditRecord` Sequel model for audit appends, chain verification, and queries instead of direct connection/table access. Preserve append locking, signatures, metadata, and hash-chain results.
+
 ## [1.11.2] - 2026-11-05
 
 ### Changed

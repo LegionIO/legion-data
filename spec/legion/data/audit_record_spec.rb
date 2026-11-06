@@ -65,7 +65,7 @@ RSpec.describe Legion::Data::AuditRecord do
   # DB-unavailable guard
   # -------------------------------------------------------------------------
   describe '.append when db unavailable' do
-    before { allow(described_class).to receive(:db_ready?).and_return(false) }
+    before { allow(Legion::Data).to receive(:connected?).and_return(false) }
 
     it 'returns an error hash' do
       result = described_class.append(chain_id: chain_id, content_type: content_type, content_hash: content_hash)
@@ -74,7 +74,7 @@ RSpec.describe Legion::Data::AuditRecord do
   end
 
   describe '.verify when db unavailable' do
-    before { allow(described_class).to receive(:db_ready?).and_return(false) }
+    before { allow(Legion::Data).to receive(:connected?).and_return(false) }
 
     it 'returns valid: false with error' do
       result = described_class.verify(chain_id: chain_id)
@@ -84,7 +84,7 @@ RSpec.describe Legion::Data::AuditRecord do
   end
 
   describe '.walk when db unavailable' do
-    before { allow(described_class).to receive(:db_ready?).and_return(false) }
+    before { allow(Legion::Data).to receive(:connected?).and_return(false) }
 
     it 'returns an empty array' do
       expect(described_class.walk(chain_id: chain_id)).to eq([])
@@ -92,7 +92,7 @@ RSpec.describe Legion::Data::AuditRecord do
   end
 
   describe '.query_by_type when db unavailable' do
-    before { allow(described_class).to receive(:db_ready?).and_return(false) }
+    before { allow(Legion::Data).to receive(:connected?).and_return(false) }
 
     it 'returns an empty array' do
       expect(described_class.query_by_type(content_type: content_type)).to eq([])

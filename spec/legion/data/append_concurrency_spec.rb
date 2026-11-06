@@ -16,14 +16,15 @@ RSpec.describe 'Concurrent database appends' do
       Sequel::Migrator.run(@database, File.expand_path('../../../lib/legion/data/migrations', __dir__))
       original_event_dataset = Legion::Data::Model::GovernanceEvent.dataset
       Legion::Data::Model::GovernanceEvent.set_dataset(@database[:governance_events])
+      original_audit_dataset = Legion::Data::Model::AuditRecord.dataset
+      Legion::Data::Model::AuditRecord.set_dataset(@database[:audit_records])
       example.run
     ensure
       Legion::Data::Model::GovernanceEvent.set_dataset(original_event_dataset) if original_event_dataset
+      Legion::Data::Model::AuditRecord.set_dataset(original_audit_dataset) if original_audit_dataset
       @database&.disconnect
     end
   end
-
-  before { allow(Legion::Data).to receive(:connection).and_return(@database) }
 
   it 'preserves every accepted audit record and governance event without forks or sequence conflicts' do
     start = Queue.new
