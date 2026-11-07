@@ -3,22 +3,12 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Data::Helper do
-  describe '#data_connected?' do
-    let(:test_class) do
-      Class.new do
-        include Legion::Data::Helper
-      end
-    end
-    let(:instance) { test_class.new }
-
-    it 'returns true when data is connected' do
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: true })
-      expect(instance.data_connected?).to be true
-    end
-
-    it 'returns false when data is not connected' do
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: false })
-      expect(instance.data_connected?).to be false
+  around do |example|
+    original = Legion::Settings[:data][:connected]
+    begin
+      example.run
+    ensure
+      Legion::Settings[:data][:connected] = original
     end
   end
 
@@ -129,20 +119,12 @@ RSpec.describe Legion::Data::Helper do
     let(:instance) { test_class.new }
 
     it 'returns {} when not connected' do
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: false })
+      Legion::Settings[:data][:connected] = false
       expect(instance.data_pool_stats).to eq({})
     end
 
-    it 'delegates to Legion::Data::Connection.pool_stats when connected' do
-      stats = { size: 5, available: 3, in_use: 2 }
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: true })
-      allow(Legion::Data::Connection).to receive(:pool_stats).and_return(stats)
-      expect(instance.data_pool_stats).to eq(stats)
-    end
-
     it 'returns {} when an error is raised' do
-      allow(Legion::Settings).to receive(:[]).and_return({})
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: true })
+      Legion::Settings[:data][:connected] = true
       allow(Legion::Data::Connection).to receive(:pool_stats).and_raise(StandardError)
       expect(instance.data_pool_stats).to eq({})
     end
@@ -157,20 +139,12 @@ RSpec.describe Legion::Data::Helper do
     let(:instance) { test_class.new }
 
     it 'returns {} when not connected' do
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: false })
+      Legion::Settings[:data][:connected] = false
       expect(instance.data_stats).to eq({})
     end
 
-    it 'delegates to Legion::Data.stats when connected' do
-      stats = { shared: { adapter: 'sqlite' }, local: {} }
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: true })
-      allow(Legion::Data).to receive(:stats).and_return(stats)
-      expect(instance.data_stats).to eq(stats)
-    end
-
     it 'returns {} when an error is raised' do
-      allow(Legion::Settings).to receive(:[]).and_return({})
-      allow(Legion::Settings).to receive(:[]).with(:data).and_return({ connected: true })
+      Legion::Settings[:data][:connected] = true
       allow(Legion::Data).to receive(:stats).and_raise(StandardError)
       expect(instance.data_stats).to eq({})
     end

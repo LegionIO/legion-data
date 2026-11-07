@@ -13,7 +13,7 @@ RSpec.describe 'Database initialization failures' do
       Dir.mktmpdir('legion-data-initialization') do |dir|
         @database_path = File.join(dir, 'shared.db')
         settings.merge!(adapter: 'sqlite', connected: false, creds: { database: @database_path },
-                        readonly: false, log: false, query_log: false, shutdown_timeout: 0,
+                        readonly: false, log: false, query_log: false,
                         migrations: settings[:migrations].merge(auto_migrate: true, ran: false),
                         models: settings[:models].merge(autoload: false, loaded: false),
                         local: settings[:local].merge(enabled: false))

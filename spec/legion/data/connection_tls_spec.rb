@@ -3,6 +3,16 @@
 require 'spec_helper'
 
 RSpec.describe 'Legion::Data::Connection TLS' do
+  around do |example|
+    original = Legion::Settings[:data][:tls]
+    begin
+      Legion::Settings[:data][:tls] = { enabled: false }
+      example.run
+    ensure
+      Legion::Settings[:data][:tls] = original
+    end
+  end
+
   before do
     stub_const('Legion::Crypt::TLS', Module.new)
   end
@@ -10,7 +20,7 @@ RSpec.describe 'Legion::Data::Connection TLS' do
   describe '.merge_tls_creds' do
     context 'with postgres adapter and TLS enabled' do
       before do
-        allow(Legion::Settings).to receive(:[]).with(:data).and_return({ tls: { enabled: true } })
+        Legion::Settings[:data][:tls] = { enabled: true }
       end
 
       it 'adds sslmode and sslrootcert' do
@@ -45,7 +55,7 @@ RSpec.describe 'Legion::Data::Connection TLS' do
 
     context 'with mysql2 adapter and TLS enabled' do
       before do
-        allow(Legion::Settings).to receive(:[]).with(:data).and_return({ tls: { enabled: true } })
+        Legion::Settings[:data][:tls] = { enabled: true }
       end
 
       it 'adds ssl_mode and sslca' do
@@ -70,13 +80,23 @@ RSpec.describe 'Legion::Data::Connection TLS' do
 
     context 'when TLS is disabled' do
       it 'returns creds unchanged' do
-        allow(Legion::Crypt::TLS).to receive(:resolve).and_return(
-          { enabled: false, verify: :peer, ca: nil, cert: nil, key: nil, auto_detected: false }
-        )
+        expect(Legion::Crypt::TLS).not_to receive(:resolve)
         creds = { host: 'db.example.com' }
         result = Legion::Data::Connection.merge_tls_creds(creds, adapter: :postgres, port: 5432)
         expect(result).to eq({ host: 'db.example.com' })
       end
+    end
+
+    it 'honors disabling TLS in the live tree after an enabled connection configuration' do
+      Legion::Settings[:data][:tls] = { enabled: true, verify: 'peer' }
+      allow(Legion::Crypt::TLS).to receive(:resolve).and_return({ enabled: true, verify: :peer })
+      secure = Legion::Data::Connection.merge_tls_creds({}, adapter: :postgres, port: 5432)
+      expect(secure[:sslmode]).to eq('verify-full')
+
+      Legion::Settings[:data][:tls] = { enabled: false }
+      expect(Legion::Crypt::TLS).not_to receive(:resolve)
+      disabled = Legion::Data::Connection.merge_tls_creds({ host: 'db.example.com' }, adapter: :postgres, port: 5432)
+      expect(disabled).to eq(host: 'db.example.com')
     end
 
     context 'when sqlite adapter' do

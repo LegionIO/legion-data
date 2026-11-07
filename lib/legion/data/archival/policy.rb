@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'legion/logging/helper'
-
 module Legion
   module Data
     module Archival
@@ -39,21 +37,8 @@ module Legion
           Time.now - (cold_after_days * 86_400)
         end
 
-        class << self
-          include Legion::Logging::Helper
-        end
-
         def self.from_settings
-          return new unless defined?(Legion::Settings)
-
-          data_settings = Legion::Settings[:data]
-          archival = data_settings.is_a?(Hash) ? data_settings[:archival] : nil
-          return new unless archival.is_a?(Hash)
-
-          new(**archival.slice(:warm_after_days, :cold_after_days, :batch_size, :tables))
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :policy_from_settings)
-          new
+          new(**Legion::Settings[:data][:archival].slice(:warm_after_days, :cold_after_days, :batch_size, :tables))
         end
       end
     end

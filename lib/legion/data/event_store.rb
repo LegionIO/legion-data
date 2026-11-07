@@ -21,11 +21,10 @@ module Legion
         def append(stream:, type:, data: {}, metadata: {})
           return { error: 'db unavailable' } unless db_ready?
 
-          conn = Legion::Data.connection
-          Legion::Data::DatabaseLock.with_claim(database: conn, table: :append_claims,
-                                                key: { kind: 'event', stream_id: stream }) do
-            records = conn[:governance_events].where(stream_id: stream).order(Sequel.desc(:sequence_number))
-            records = records.for_update unless conn.database_type == :sqlite
+          database = Legion::Data::Model::GovernanceEvent.db
+          Legion::Data::DatabaseLock.with_claim(key: { kind: 'event', stream_id: stream }) do
+            records = Legion::Data::Model::GovernanceEvent.where(stream_id: stream).order(Sequel.desc(:sequence_number))
+            records = records.for_update unless database.database_type == :sqlite
             last = records.first
 
             seq = (last&.[](:sequence_number) || 0) + 1
@@ -35,7 +34,7 @@ module Legion
             metadata_json = Legion::JSON.dump(metadata)
             event_hash = compute_hash(stream, seq, type, data_json, metadata_json, prev_hash)
 
-            conn[:governance_events].insert(
+            Legion::Data::Model::GovernanceEvent.create(
               stream_id:       stream,
               event_type:      type,
               sequence_number: seq,
@@ -54,7 +53,7 @@ module Legion
         def read_stream(stream, since: nil)
           return [] unless db_ready?
 
-          ds = Legion::Data.connection[:governance_events].where(stream_id: stream)
+          ds = Legion::Data::Model::GovernanceEvent.where(stream_id: stream)
           ds = ds.where { created_at >= since } if since
           ds.order(:sequence_number).all.map { |e| deserialize(e) }
         end
@@ -62,7 +61,7 @@ module Legion
         def read_by_type(type, since: nil, limit: 100)
           return [] unless db_ready?
 
-          ds = Legion::Data.connection[:governance_events].where(event_type: type)
+          ds = Legion::Data::Model::GovernanceEvent.where(event_type: type)
           ds = ds.where { created_at >= since } if since
           ds.order(Sequel.desc(:created_at)).limit(limit).all.map { |e| deserialize(e) }
         end
@@ -70,10 +69,10 @@ module Legion
         def verify_chain(stream)
           return { valid: false, error: 'db unavailable' } unless db_ready?
 
-          events = Legion::Data.connection[:governance_events]
-                               .where(stream_id: stream)
-                               .order(:sequence_number)
-                               .all
+          events = Legion::Data::Model::GovernanceEvent
+                   .where(stream_id: stream)
+                   .order(:sequence_number)
+                   .all
 
           prev_hash = '0' * 64
           legacy_hashes = 0
@@ -129,7 +128,7 @@ module Legion
         end
 
         def db_ready?
-          defined?(Legion::Data) && Legion::Data.connection&.table_exists?(:governance_events)
+          Legion::Data.connected? && Legion::Data::Model::GovernanceEvent.db.table_exists?(:governance_events)
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :event_store_db_ready?)
           false

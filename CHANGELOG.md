@@ -1,5 +1,55 @@
 # Legion::Data Changelog
 
+## [1.11.7] - 2026-11-06
+
+### Changed
+- Simplify `Connection.shutdown` to a direct disconnect: it closes the shared connection and query log and returns `true`. Pool drain ownership, `shutdown_status` reporting, and the `shutdown_timeout` setting were removed along with the `ConnectionPool` module. `Connection.connection_info` no longer reports the `shutdown` key.
+- `Connection.setup` dev-mode fallback now rescues any connection failure (not only `Sequel::DatabaseConnectionError`) before falling back to SQLite.
+- `Models.load` no longer rebinds loaded model datasets after connection setup.
+
+## [1.11.6] - 2026-11-05
+
+### Fixed
+- Reject storage-tier source models connected to a different database before moving rows, preserving the single-database transaction boundary.
+
+## [1.11.5] - 2026-11-05
+
+### Changed
+- Register the `DataArchive` Sequel model and use it for warm/cold storage operations. `StorageTiers.archive_to_warm` now accepts the source `model:` instead of `table:`; source selection and deletion use that model, and exported rows remain plain Hashes.
+
+## [1.11.4] - 2026-11-05
+
+### Changed
+- Register the `AppendClaim` Sequel model and use it for database append locks instead of direct table access. Audit and event callers now supply only the claim key; retain existing transaction and adapter-specific locking behavior.
+
+## [1.11.3] - 2026-11-05
+
+### Changed
+- Use the existing `AuditRecord` Sequel model for audit appends, chain verification, and queries instead of direct connection/table access. Preserve append locking, signatures, metadata, and hash-chain results.
+
+## [1.11.2] - 2026-11-05
+
+### Changed
+- Register the `GovernanceEvent` Sequel model and use it for event-store appends, reads, and chain verification instead of direct table access. Preserve existing stream locking, sequence numbering, and hash-chain behavior.
+
+## [1.11.1] - 2026-11-05
+
+### Changed
+- Persist extraction step timings through the existing `ExtractStepTiming` Sequel model instead of direct connection queries and bulk inserts.
+
+## [1.11.0] - 2026-11-03
+
+### Added
+- Migration 139 provisions `task_logs` and registers its model. Both existing `TaskLog.insert` call shapes initialize UUIDs and event timestamps while preserving the integer return value; deleting parent records retains log evidence. Unsupported manually created tables fail without data loss and require operator reconciliation.
+
+### Changed
+- Simplify task persistence to normal per-message model inserts or updates, assuming RabbitMQ prefetch of one and runtime acknowledgement after a successful write. Remove the added execution facade, attempt/dispatch models, leases, outbox coordination, execution-policy settings, and unmerged coordination schema migrations. Renumber the unmerged task-log migration to 139; migrations already on main remain unchanged.
+- `Legion::Data::Task::Status` retains immutable persisted identities independently of Transport and Core, including scheduled tasks and terminal transformer exceptions.
+- Preserve existing Task idempotency helpers: positional arguments, Sequel model returns, historical key lookup, optional TTL, and key reuse after terminal completion or expiry. Recognize canonical namespaced terminal statuses as well as legacy statuses, so completed runtime tasks do not retain active keys. Frozen timestamp payloads are canonicalized without mutation.
+- Retain ordinary task archival eligibility without execution-specific exclusions.
+- Read runtime configuration from the live `Legion::Settings[:data]` tree, including TLS, local migration permission, archival policy, and cache TTL. Register defaults once at library boot without resetting live connection state during reads.
+- Define connection defaults directly in `Settings.default`, following the framework's method-returned settings Hash pattern; remove `CONNECTION_DEFAULTS`.
+
 ## [1.10.28] - 2026-10-30
 
 ### Changed

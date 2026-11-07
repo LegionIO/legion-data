@@ -7,6 +7,16 @@ RSpec.describe Legion::Data::Local do
   let(:test_db) { 'legionio_local_test.db' }
   let(:resolved_db) { File.join(File.expand_path('~/.legionio'), test_db) }
 
+  around do |example|
+    original = Legion::Settings[:data][:local]
+    begin
+      Legion::Settings[:data][:local] = Marshal.load(Marshal.dump(original))
+      example.run
+    ensure
+      Legion::Settings[:data][:local] = original
+    end
+  end
+
   before(:each) do
     described_class.reset!
   end
@@ -128,6 +138,17 @@ RSpec.describe Legion::Data::Local do
       described_class.register_migrations(name: :test, path: migrations_dir)
       described_class.setup(database: test_db)
       expect(described_class.connection.table_exists?(:local_test_table)).to be true
+    end
+
+    it 'honors disabled migrations and a later live permission change' do
+      Legion::Settings[:data][:local][:migrations][:auto_migrate] = false
+      described_class.register_migrations(name: :test, path: migrations_dir)
+      described_class.setup(database: test_db)
+      expect(described_class.connection.table_exists?(:local_test_table)).to be(false)
+
+      Legion::Settings[:data][:local][:migrations][:auto_migrate] = true
+      described_class.register_migrations(name: :test, path: migrations_dir)
+      expect(described_class.connection.table_exists?(:local_test_table)).to be(true)
     end
 
     it 'leaves failed startup disconnected and retries pending migrations' do
