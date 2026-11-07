@@ -1,5 +1,12 @@
 # Legion::Data Changelog
 
+## [1.11.7] - 2026-11-06
+
+### Changed
+- Simplify `Connection.shutdown` to a direct disconnect: it closes the shared connection and query log and returns `true`. Pool drain ownership, `shutdown_status` reporting, and the `shutdown_timeout` setting were removed along with the `ConnectionPool` module. `Connection.connection_info` no longer reports the `shutdown` key.
+- `Connection.setup` dev-mode fallback now rescues any connection failure (not only `Sequel::DatabaseConnectionError`) before falling back to SQLite.
+- `Models.load` no longer rebinds loaded model datasets after connection setup.
+
 ## [1.11.6] - 2026-11-05
 
 ### Fixed

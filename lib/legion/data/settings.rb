@@ -77,10 +77,6 @@ module Legion
           keepalives_count:              3,
           tcp_user_timeout:              15_000,
 
-          # Shutdown: max seconds to wait for checked-out connections to return before
-          # force-disconnecting them.
-          shutdown_timeout:              5,
-
           # Adapter-specific (nil = use adapter built-in default)
           connect_timeout:               nil,
           read_timeout:                  nil,

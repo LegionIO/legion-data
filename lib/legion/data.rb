@@ -84,6 +84,8 @@ module Legion
       end
 
       def setup_cache
+        return unless Legion::Settings[:data][:models][:loaded]
+
         cache_settings = Legion::Settings[:data][:cache]
         setup_static_cache if cache_settings[:static_cache]
         setup_external_cache if cache_settings[:auto_enable] && defined?(::Legion::Cache)
