@@ -67,7 +67,7 @@ RSpec.describe 'Migrations' do
 
     critical_indexes.each do |table, index_names|
       indexes = if db.adapter_scheme == :postgres
-                  db.indexes(table).keys.map(&:to_s)
+                  db.indexes(table, include_partial: true).keys.map(&:to_s)
                 else
                   db[:sqlite_master].where(type: 'index', tbl_name: table.to_s).select_map(:name)
                 end

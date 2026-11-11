@@ -18,7 +18,7 @@ Core responsibilities:
 | Audit and governance | `audit_log`, `audit_records`, `governance_events`, archive manifests |
 | Identity and RBAC | providers, principals, identities, groups, memberships, role grants, runner grants |
 | LLM ledger | conversations, model-visible messages, inference requests/responses, routing, metrics, tool calls, policy/security events |
-| Apollo knowledge | PostgreSQL `pgvector` knowledge entries, relations, expertise, access logs |
+| Apollo knowledge | PostgreSQL `pgvector` and SQLite JSON-text embeddings, relations, expertise, access logs |
 | Local state | on-node SQLite cognitive state, independent of the shared database |
 
 The schema is portable by default across SQLite, MySQL, and PostgreSQL. PostgreSQL-only behavior is isolated to features that need PostgreSQL, such as Apollo vector columns.
@@ -398,7 +398,7 @@ SQLite lock waits use a Ruby busy handler that releases the GVL between retries,
 
 `data.statement_timeout` (default 5,000 ms) and `data.lock_timeout` (default 2,000 ms) are applied before every PostgreSQL connection enters the pool, including startup and replacement connections. Set a value to `null` to leave that server setting unchanged, or `0` to explicitly disable the corresponding PostgreSQL timeout.
 
-PostgreSQL with `pgvector` is required for Apollo models:
+PostgreSQL Apollo vector storage requires the `pgvector` extension:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -526,7 +526,16 @@ Restore preserves original IDs and restores parent/master links after inserting 
 
 Each archive batch receives a UUID before upload. S3, Azure, and local object paths use `legion-archive/<table>/<year>/<month>/batch_<uuid>.jsonl.gz`; the same UUID is stored in `archive_manifest.batch_id`. Repeated runs do not reuse numbered object names. Existing manifest paths remain valid; no stored objects are renamed. Direct `Archiver.upload_batch` callers must supply `batch_id:` instead of `batch_n:`.
 
-### Encryption Key Cache
+### Encryption Keys and Cache
+
+When Crypt and `Crypt::PartitionKeys` are loaded, the default scope (`tenant_id: nil`) uses
+the supported `Legion::Crypt.cs` cluster-key API. Keep the cluster secret persistent across
+restarts to retain access to encrypted records. Crypt initialization failures propagate;
+they do not select the development fallback key. Encrypted columns require binary storage.
+The no-Crypt development fallback is unchanged.
+
+This default-scope fix does not repair tenant-scoped Crypt integration or implement the
+separate per-tenant Vault master-key provisioning and erasure lifecycle.
 
 The default scope (`tenant_id: nil`) and tenant IDs have separate cache entries, including a tenant literally named `__default__`. Restart processes or clear existing key-provider caches when upgrading. This fix does not rewrite existing ciphertext: if that tenant name was used with the old cache, assess records encrypted with the wrong scope's key and re-encrypt them with the intended key. The reader does not fall back to another scope's key.
 
@@ -595,9 +604,32 @@ All new tables follow a column convention. Required fields are present on every 
 | `ApolloExpertise` | `apollo_expertise` | Per-agent domain expertise — PostgreSQL only |
 | `ApolloAccessLog` | `apollo_access_log` | Apollo access audit log — PostgreSQL only |
 
-Apollo models require PostgreSQL with the `pgvector` extension. They are skipped silently on SQLite and MySQL.
+The legacy flat Apollo model classes require PostgreSQL with `pgvector`. The namespaced `Legion::Data::Model::Apollo::*` models use the available Apollo tables on PostgreSQL and SQLite.
 
 The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces provide cleaner Sequel model names for API-facing code while preserving the legacy flat model classes. Official LLM lifecycle models live under `Legion::Data::Models::LLM`.
+
+### Apollo Embedding Storage
+
+Migrations 140–150 add the storage fields needed by the Apollo consumer without changing the
+established PostgreSQL `vector(1024)` columns or removing any ANN indexes. SQLite gains
+JSON-text embedding columns. Active and archived entries gain nullable `embedding_space_id`,
+`embedding_dimensions`, and `embedding_provenance`; provenance uses PostgreSQL JSONB or
+SQLite text. Model identity and dimensions are separate facts: two 1024-dimensional vectors
+are not necessarily from a compatible embedding space.
+
+Existing rows, hashes, and PostgreSQL vectors are preserved. Legacy metadata remains null;
+reembedding must supply genuine model provenance rather than inferring it from vector length.
+These migrations do not change embedding routing or add support for arbitrary vector sizes.
+
+Active content-hash uniqueness is scoped by `access_scope` and owner. Global entries share
+one boundary regardless of owner; restricted owners and legacy null owners remain distinct.
+Archived copies remain permitted. The new unique index is created before the old one is
+removed, so a failed upgrade does not leave deduplication unprotected.
+
+Each migration changes one table. Rollback restores the original global unique index when
+the records satisfy it; conflicting ownership-scoped duplicates cause a database constraint
+failure without deleting records. Reversing the additions removes their metadata and SQLite
+embedding columns. PostgreSQL vectors and existing ANN indexes are unchanged in both directions.
 
 ### Identity Namespace Models
 
@@ -668,6 +700,10 @@ Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true
 | 077–090 | Portable LLM lifecycle schema: conversations, messages, inference requests/responses, route attempts, inference metrics, provider-requested tool calls, compactions, policy/security, and registry events |
 | 091–096 | Portable identity companion schema with integer primary keys, public UUIDs, provider capabilities, principals, identities, groups, memberships, and audit log |
 | 097 | LLM dispatch identifiers for fleet operation, correlation, idempotency, provider instance, and dispatch path |
+| 140–141 | JSON-text embedding columns for non-PostgreSQL active and archived Apollo entries |
+| 142–147 | Nullable embedding-space identity, dimensions, and provenance, one column per migration |
+| 148 | Active embedding-profile lookup index |
+| 149–150 | Ownership-scoped hash uniqueness, installed before removing the old global unique index |
 
 Run migrations standalone:
 
@@ -727,15 +763,21 @@ bundle exec rspec --format json --out tmp/rspec_results.json --format progress -
 bundle exec rubocop -A   # zero offenses expected
 ```
 
-Task-execution lifecycle and concurrency regressions use temporary SQLite storage by default.
-To exercise the same lifecycle suite on PostgreSQL, set `LEGION_DATA_ADAPTER=postgres` and
+The full suite defaults to SQLite. Set `LEGION_DATA_ADAPTER=postgres` plus
 `LEGION_DATA_HOST`, `LEGION_DATA_PORT`, `LEGION_DATA_USER`, `LEGION_DATA_PASSWORD`, and
-`LEGION_DATA_DATABASE` for a **disposable test database**, then run the full RSpec command
-above. These examples create and remove a random isolated schema, applying the actual task
-migrations with minimal foreign-key fixtures. This verifies PostgreSQL ownership locks,
-savepoint rollback, unique identities, and reconnect behavior; it does not claim coverage of
-the unrelated historical `pgvector` migration chain. Other suites retain their own database
-fixtures.
+`LEGION_DATA_DATABASE` to exercise shared models and migrations against a **disposable
+PostgreSQL database**. PostgreSQL 16+ needs `vector` and `uuid-ossp` available, and the test
+role needs extension-installation and `CREATEDB` privileges. Apollo examples create and
+drop uniquely named databases and apply the real chain through 139 before exercising
+140–150. PostgreSQL setup prohibits SQLite fallback and verifies the actual adapter.
+Intentionally SQLite-specific unit fixtures and local cognitive storage remain SQLite.
+
+Always use a fresh temporary `HOME`, `LEGION_DNS_BOOTSTRAP=false`, and the real `RBENV_ROOT`
+when using rbenv. SQLite test setup deletes its database under HOME.
+
+The existing `ci.yml` workflow retains its jobs, including PostgreSQL 16 with pgvector.
+The additional `database-migrations.yml` covers SQLite and PostgreSQL 17/pgvector on
+Ruby 3.4 and 4.0, verifies the backend/schema, runs the full suite, and uploads results.
 
 This repo also includes a pre-commit configuration:
 

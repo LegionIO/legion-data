@@ -89,7 +89,9 @@ RSpec.describe Legion::Data::Model::Task do
 
   it 'allows the same idempotency key after an unrelated foreign-key failure' do
     expect do
-      described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
+      described_class.db.transaction(savepoint: true) do
+        described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
+      end
     end.to raise_error(Sequel::ForeignKeyConstraintViolation)
     task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
     expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])

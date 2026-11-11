@@ -1,5 +1,21 @@
 # Legion::Data Changelog
 
+## [1.11.9] - 2026-11-11
+
+### Fixed
+- Fix the non-tenant encryption crash in #87 by using the supported `Legion::Crypt.cs` key API instead of `default_encryption_key`. Crypt initialization failures still propagate rather than falling back to a development key; tenant-scoped key retrieval is unchanged.
+- Verify default-scoped encrypted-column persistence across fresh processes with real `legion-crypt`, including invalid-key rejection. Crypt remains a test-only dependency, not a required runtime dependency of Data.
+
+## [1.11.8] - 2026-11-10
+
+### Added
+- Add SQLite JSON-text embedding storage and nullable embedding-space, dimension, and provenance metadata for active and archived Apollo entries. PostgreSQL retains `vector(1024)` and every existing ANN index; legacy metadata remains unknown until reembedding.
+- Add ownership-scoped active content-hash uniqueness without rewriting hashes or deleting records. Create the replacement index before removing global uniqueness; rollback restores the old constraint when the data permits it.
+- Add a separate SQLite/PostgreSQL 17/pgvector migration workflow on Ruby 3.4 and 4.0 while retaining the existing CI workflow and jobs.
+
+### Fixed
+- Honor the requested test database adapter, prohibit PostgreSQL fallback to SQLite, and provide pgvector in the existing PostgreSQL 16 job. Exercise real migration chains, rollback boundaries, and PostgreSQL-specific fixtures.
+
 ## [1.11.7] - 2026-11-06
 
 ### Changed
