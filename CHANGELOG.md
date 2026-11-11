@@ -3,15 +3,16 @@
 ## [1.11.8] - 2026-11-10
 
 ### Added
-- Add forward migrations 140 (`apollo_entries`) and 141 (`apollo_entries_archive`) for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON text vectors on SQLite and unconstrained native vectors on PostgreSQL.
+- Add migrations 140–155 for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON-text vectors on SQLite and unconstrained native vectors on PostgreSQL.
 
 ### Fixed
 - Replace global active content-hash uniqueness with scope/owner uniqueness while preserving original hashes, existing records, legacy null owners, and archived copies.
-- Preserve PostgreSQL vectors while removing incompatible direct-column ANN indexes; retain unrelated and dimension-constrained expression indexes. Legacy provenance remains unknown until application-driven reembedding.
+- Preserve PostgreSQL vectors while removing the three published direct-column ANN indexes; retain unrelated and genuine dimension-constrained expression indexes. Additional operator-created direct ANN indexes require reconciliation before widening. Legacy provenance remains unknown until application-driven reembedding.
 
 ### Changed
-- Migrations 140–141 are intentionally irreversible: restoring fixed vector dimensions or global uniqueness could reject or destroy newly valid data.
-- Integrate main through 1.11.7 and preserve its published migrations, including 139 (`task_logs`); move the unmerged Apollo migrations to 140–141, one table per migration.
+- Split the unpublished Apollo changes into one operation on one table per migration: index removals, storage conversion, individual metadata columns, dimension backfills, lookup indexing, and ownership uniqueness. Create the replacement unique index before removing the old one.
+- Use Sequel table/index DSL and explicit reversal paths for adapter-dependent column additions. Storage conversion, PostgreSQL dimension backfills, and removal of global uniqueness remain irreversible to avoid data loss.
+- Preserve mainline migrations through 139 (`task_logs`) unchanged.
 
 ## [1.11.7] - 2026-11-06
 
@@ -43,7 +44,7 @@
 ## [1.11.2] - 2026-11-05
 
 ### Changed
-- Register the `GovernanceEvent` Sequel model and use it for event-store appends, reads, and chain verification instead of direct table access. Preserve existing stream locking, sequence numbering, and hash-chain results.
+- Register the `GovernanceEvent` Sequel model and use it for event-store appends, reads, and chain verification instead of direct table access. Preserve existing stream locking, sequence numbering, and hash-chain behavior.
 
 ## [1.11.1] - 2026-11-05
 

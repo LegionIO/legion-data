@@ -595,9 +595,13 @@ All new tables follow a column convention. Required fields are present on every 
 | `ApolloExpertise` | `apollo_expertise` | Per-agent domain expertise — PostgreSQL only |
 | `ApolloAccessLog` | `apollo_access_log` | Apollo access audit log — PostgreSQL only |
 
-The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migrations 140–141 add active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
+The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migrations 140–155 add active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
 
-Migrations 140–141 preserve existing rows and hashes, replace active hash uniqueness with scope/owner uniqueness, and leave legacy provenance unknown for application-driven reembedding. They drop incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply them before deploying `lex-apollo >= 0.4.45`.
+Migrations 140–155 preserve existing rows and hashes, replace active hash uniqueness with scope/owner uniqueness, and leave legacy provenance unknown for application-driven reembedding. Each file performs one schema or data change on one table. The new ownership index is created before the old global hash index is removed, so intermediate versions retain deduplication. Complete the entire range before deploying `lex-apollo >= 0.4.45`.
+
+Migrations 140–142 remove the three published PostgreSQL ANN indexes. Additional operator-created direct-column ANN indexes require reconciliation before migration 143 or 144 can widen the vector column. PostgreSQL can simplify an `embedding::vector(1024)` index expression into a direct-column index when the column already has that type; a dimension predicate alone does not make it compatible. Genuine dimension-constrained expression indexes and unrelated indexes remain untouched.
+
+Sequel commits each numbered migration separately on PostgreSQL and SQLite. A failure leaves the schema version at the last successful step. The index removals can be rolled back before the storage conversion; additive columns and lookup indexes have their own reversal paths. Storage conversion, PostgreSQL dimension backfills, and removal of global hash uniqueness deliberately reject rollback rather than deleting vectors, erasing application-written dimensions, or discarding ownership-scoped records.
 
 The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces provide cleaner Sequel model names for API-facing code while preserving the legacy flat model classes. Official LLM lifecycle models live under `Legion::Data::Models::LLM`.
 
@@ -675,7 +679,12 @@ Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true
 | 137 | Preserve task archive payloads and identities |
 | 138 | Serialized audit and governance append claims |
 | 139 | `task_logs` table and `TaskLog` model |
-| 140–141 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness (one table per migration) |
+| 140–142 | Remove the three published PostgreSQL Apollo ANN indexes, one index per migration |
+| 143–144 | Unconstrained PostgreSQL vectors or SQLite JSON-text embedding storage, one table per migration |
+| 145–150 | Embedding-space ID, dimensions, and provenance, one column per migration |
+| 151–152 | Backfill PostgreSQL vector dimensions, one table per migration |
+| 153 | Active embedding-space/dimension lookup index |
+| 154–155 | Add ownership-scoped content-hash uniqueness, then remove the old global unique index |
 
 Run migrations standalone:
 
@@ -688,6 +697,7 @@ Migration rules:
 - Do not edit published migrations.
 - Do not guard migrations with `create_table?`, `table_exists?`, `if_not_exists`, or similar conditional schema logic.
 - Add new migrations in the next available number and keep domains split by dependency and rollback risk.
+- Each new migration performs one schema or data change on one table. Keep index changes, column changes, and data backfills in separate files; do not use iterators.
 - Use portable Sequel DSL unless a feature truly requires adapter-specific behavior.
 - Prefer integer `id` primary keys for joins plus public `uuid` columns for APIs, logs, and external references.
 - Avoid JSON columns unless the shape is genuinely provider-specific or dynamic evidence.

@@ -20,7 +20,7 @@ RSpec.describe 'Apollo embedding and ownership migration' do
   end
 
   def apollo_upgrade(**)
-    Sequel::Migrator.run(db, migration_path, target: 141)
+    Sequel::Migrator.run(db, migration_path, target: 155)
   end
 
   it 'upgrades the real version 139 tables without changing existing records or inventing provenance' do
@@ -35,7 +35,7 @@ RSpec.describe 'Apollo embedding and ownership migration' do
         row.merge(embedding: nil, embedding_space_id: nil, embedding_dimensions: nil, embedding_provenance: nil)
       end)
     end
-    expect(db[:schema_info].get(:version)).to eq(141)
+    expect(db[:schema_info].get(:version)).to eq(155)
   end
 
   it 'fails cleanly when a manually added embedding column already exists' do
@@ -45,8 +45,61 @@ RSpec.describe 'Apollo embedding and ownership migration' do
     end
 
     expect { apollo_upgrade }.to raise_error(Sequel::DatabaseError)
-    expect(db[:schema_info].get(:version)).to eq(139)
+    expect(db[:schema_info].get(:version)).to eq(142)
     expect(db[:apollo_entries].first).to include(embedding: '[0.25, 0.75, -0.5]', content_hash: 'legacy')
+  end
+
+  it 'keeps the active storage change when the separate archive storage migration fails' do
+    active_id = apollo_insert(content_hash: 'active')
+    db.alter_table(:apollo_entries_archive) { add_column :embedding, String, text: true }
+    archive_id = apollo_insert(table: :apollo_entries_archive, content_hash: 'archive', embedding: '[0.25,0.75]')
+
+    expect { apollo_upgrade }.to raise_error(Sequel::DatabaseError)
+
+    expect(db[:schema_info].get(:version)).to eq(143)
+    expect(db[:apollo_entries][id: active_id]).to include(content_hash: 'active', embedding: nil)
+    expect(db[:apollo_entries_archive][id: archive_id]).to include(content_hash: 'archive', embedding: '[0.25,0.75]')
+  end
+
+  it 'reverses metadata additions independently without removing stored vectors' do
+    Sequel::Migrator.run(db, migration_path, target: 144)
+    apollo_insert(content_hash: 'active', embedding: '[0.25,0.75]')
+    apollo_insert(table: :apollo_entries_archive, content_hash: 'archive', embedding: '[0.25,0.75,-0.5]')
+    snapshots = %i[apollo_entries apollo_entries_archive].to_h { |table| [table, db[table].all] }
+
+    Sequel::Migrator.run(db, migration_path, target: 153)
+    Sequel::Migrator.run(db, migration_path, target: 144)
+
+    snapshots.each do |table, rows|
+      expect(db[table].all).to eq(rows)
+    end
+    expect(db[:schema_info].get(:version)).to eq(144)
+
+    apollo_upgrade
+
+    expect(db[:apollo_entries].get(:embedding)).to eq('[0.25,0.75]')
+    expect(db[:apollo_entries_archive].get(:embedding)).to eq('[0.25,0.75,-0.5]')
+  end
+
+  it 'keeps global deduplication enforced if creation of the replacement index fails' do
+    attributes = { content_hash: 'unchanged', access_scope: 'private', identity_principal_id: 41 }
+    apollo_insert(**attributes)
+    Sequel::Migrator.run(db, migration_path, target: 153)
+    db.add_index(:apollo_entries, :source_agent, name: :idx_apollo_content_hash_owner)
+
+    expect { apollo_upgrade }.to raise_error(Sequel::DatabaseError)
+    expect(db[:schema_info].get(:version)).to eq(153)
+    expect { apollo_insert(**attributes, identity_principal_id: 42) }.to raise_error(Sequel::UniqueConstraintViolation)
+
+    db.drop_index(:apollo_entries, :source_agent, name: :idx_apollo_content_hash_owner)
+    Sequel::Migrator.run(db, migration_path, target: 154)
+    expect { apollo_insert(**attributes, identity_principal_id: 42) }.to raise_error(Sequel::UniqueConstraintViolation)
+    Sequel::Migrator.run(db, migration_path, target: 153)
+    expect { apollo_insert(**attributes, identity_principal_id: 42) }.to raise_error(Sequel::UniqueConstraintViolation)
+
+    apollo_upgrade
+    apollo_insert(**attributes, identity_principal_id: 42)
+    expect(db[:apollo_entries].where(content_hash: 'unchanged').select_map(:identity_principal_id)).to contain_exactly(41, 42)
   end
 
   it 'stores different vector dimensions and explicit provenance in both tables' do
@@ -130,8 +183,8 @@ RSpec.describe 'Apollo embedding and ownership migration' do
     apollo_insert(content_hash: 'two-owners', access_scope: 'private', identity_principal_id: 42, embedding: '[1,2,3]')
     snapshots = db[:apollo_entries].all
 
-    expect { Sequel::Migrator.run(db, migration_path, target: 140) }.to raise_error(Sequel::Error)
+    expect { Sequel::Migrator.run(db, migration_path, target: 154) }.to raise_error(Sequel::Error)
     expect(db[:apollo_entries].all).to eq(snapshots)
-    expect(db[:schema_info].get(:version)).to eq(141)
+    expect(db[:schema_info].get(:version)).to eq(155)
   end
 end
