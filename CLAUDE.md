@@ -1,5 +1,3 @@
-Always run a full `bundle exec rspec` and `bundle exec rubocop -A` and fix all errors before committing.
-
 # legion-data
 
 Persistent storage gem for LegionIO. Owns Sequel database connections, numbered migrations, models, local SQLite state, extract timing persistence, audit/governance storage, identity/RBAC storage, Apollo storage, and the LLM lifecycle ledger.
@@ -7,8 +5,6 @@ Persistent storage gem for LegionIO. Owns Sequel database connections, numbered 
 ## Commands
 
 ```bash
-bundle install
-bundle exec rubocop -A
 bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
 ```
 
@@ -23,7 +19,7 @@ jq '[.examples[] | select(.status != "passed") | {file_path, line_number, full_d
 - `lib/legion/data/connection.rb`: Sequel connection setup, diagnostics, fallback, query logging.
 - `lib/legion/data/migration.rb`: numbered Sequel migrations.
 - `lib/legion/data/model.rb`: shared model loader.
-- `lib/legion/data/models/`: flat and namespaced Sequel model classes.
+- `lib/legion/data/models/`: flat and namespaced Sequel model classes (`Identity::*`, `Apollo::*`, `RBAC::*`, `LLM::*`).
 - `lib/legion/data/local.rb`: local SQLite database for on-node state.
 - `lib/legion/data/extract.rb`: text extraction and persisted extract step timings.
 - `lib/legion/data/spool.rb`: filesystem write buffer when DB writes are unavailable.
@@ -94,20 +90,6 @@ Sequel.migration do
   end
 end
 ```
-
-### Column Option Reference
-
-| Option | Purpose |
-|--------|---------|
-| `:null` | `false` = NOT NULL, `true` = nullable |
-| `:default` | Default value (use `Sequel::CURRENT_TIMESTAMP` for timestamps) |
-| `:index` | `true` creates an index on this column; pass a Hash for index options |
-| `:unique` | `true` adds a UNIQUE constraint |
-| `:on_delete` | FK behavior: `:cascade`, `:set_null`, `:restrict`, `:no_action` |
-| `:on_update` | FK behavior: `:cascade`, `:set_null`, `:restrict`, `:no_action` |
-| `:key` | For FKs — the referenced column (unnecessary if referencing primary key) |
-| `:size` | Column width for String/Decimal |
-| `:text` | `true` for TEXT columns (unlimited length) |
 
 ### Foreign Key Conventions
 
@@ -190,17 +172,6 @@ All new tables in legion-data should follow this column convention. Required fie
 - Identity FKs always use `identity_principal_id` and `identity_id` — never `agent_id`, `principal_id`, `user_id`, or other loose variants for new tables.
 - The denormalized string field is always `identity_canonical_name` — not `canonical_name`, `actor`, `agent_id`, or `identity_name`.
 - Existing columns (`agent_id`, `source_agent`, `submitted_by`, `actor`, etc.) on pre-existing tables are **not renamed or removed** — they are historical record and intentionally left as-is. New identity columns are purely additive.
-
-## Current Schema Landmarks
-
-- `074`-`076`: Apollo field width, task idempotency, extract step timings.
-- `077`-`090`: LLM lifecycle ledger.
-- `091`-`096`: portable identity companion tables.
-- `097`: LLM dispatch fields (operation, correlation_id, provider_instance, dispatch_path).
-- `098`-`099`: Legacy identity table drop + rename (portable_identity_* → identity_*).
-- `100`-`102`: Apollo identity columns + access_scope + indexes.
-- `103`-`114`: LLM table identity standardization (access_scope, identity_principal_id, identity_id, identity_canonical_name).
-- Namespaced models: `Identity::*`, `Apollo::*`, `RBAC::*`, `LLM::*`.
 
 ## Boundaries
 

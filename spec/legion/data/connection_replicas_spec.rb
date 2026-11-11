@@ -13,7 +13,7 @@ RSpec.describe Legion::Data::Connection do
     begin
       settings.merge!(adapter: 'postgres', creds: { user: 'primary', password: 'primary-password', database: 'ledger' },
                       read_replica_url: nil, replicas: [], log: false, query_log: false, test: true,
-                      preconnect: false, dev_mode: false, shutdown_timeout: 0, statement_timeout: 37, lock_timeout: 19)
+                      preconnect: false, dev_mode: false, statement_timeout: 37, lock_timeout: 19)
       example.run
     ensure
       @databases.each(&:disconnect)

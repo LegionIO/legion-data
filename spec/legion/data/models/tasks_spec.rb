@@ -1,66 +1,104 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-Legion::Data::Connection.setup
-Legion::Data::Models.load
 
 RSpec.describe Legion::Data::Model::Task do
-  it { should respond_to? :relationship }
-  it { should respond_to? :task_log }
-  it { should respond_to? :parent }
-  it { should respond_to? :children }
-  it { should respond_to? :master }
-  it { should respond_to? :slave }
-  it { should respond_to? :user_owner }
-  it { should respond_to? :group_owner }
+  let(:key) { SecureRandom.uuid }
 
-  describe '.idempotency_key_for' do
-    it 'returns the same SHA-256 key for hash payloads with different key order' do
-      left = described_class.idempotency_key_for({ b: 2, a: 1 })
-      right = described_class.idempotency_key_for({ a: 1, b: 2 })
-
-      expect(left).to eq(right)
-      expect(left).to match(/\A[0-9a-f]{64}\z/)
-    end
+  around do |example|
+    described_class.db.transaction(rollback: :always) { example.run }
   end
 
-  describe '.create_idempotent' do
-    it 'returns an existing active task for duplicate payloads' do
-      attrs = { status: 'pending', payload: '{"a":1}' }
-      first = described_class.create_idempotent(attrs, payload: { a: 1 })
-      second = described_class.create_idempotent(attrs, payload: { a: 1 })
+  it 'canonicalizes nested payload keys without changing array order' do
+    left = described_class.idempotency_key_for({ b: [{ d: 4, c: 3 }], a: 1 })
+    equivalent = described_class.idempotency_key_for({ 'a' => 1, 'b' => [{ 'c' => 3, 'd' => 4 }] })
+    different = described_class.idempotency_key_for({ b: [3, 4], a: 1 })
+    expect(left).to eq(equivalent)
+    expect(left).not_to eq(different)
+  end
 
-      expect(second.id).to eq(first.id)
-    end
+  it 'returns the existing model for duplicate positional-hash requests without an implicit TTL' do
+    values = { status: 'pending' }.freeze
+    first = described_class.create_idempotent(values, idempotency_key: key)
+    first.update(status: 'running')
+    duplicate = described_class.create_idempotent(values, idempotency_key: key)
 
-    it 'creates a new task after the prior idempotency key reaches terminal status' do
-      attrs = { status: 'pending', payload: '{"a":2}' }
-      first = described_class.create_idempotent(attrs, payload: { a: 2 })
-      first.update(status: 'completed')
-      second = described_class.create_idempotent(attrs, payload: { a: 2 })
+    expect(duplicate).to be_a(described_class)
+    expect(duplicate.values).to include(id: first.id, status: 'running', idempotency_expires_at: nil)
+    expect(described_class.find_active_by_idempotency_key(key, now: Time.now + 86_400).id).to eq(first.id)
+    expect(values).to eq(status: 'pending')
+  end
 
-      expect(second.id).not_to eq(first.id)
-    end
+  it 'recognizes an active idempotency key stored before durable execution identities existed' do
+    existing = described_class.create(status: 'pending', idempotency_key: key)
 
-    it 'reuses an expired key without treating another key as the same task' do
-      key = "expired-#{SecureRandom.hex(12)}"
-      expired = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: -1)
-      active = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 60)
-      other = described_class.create_idempotent({ status: 'pending' }, idempotency_key: "#{key}-other")
+    expect(described_class.find_active_by_idempotency_key(key).id).to eq(existing.id)
+    expect(described_class.create_idempotent({ status: 'pending' }, idempotency_key: key).id).to eq(existing.id)
+  end
 
-      expect(active.id).not_to eq(expired.id)
-      expect(described_class.create_idempotent({ status: 'pending' }, idempotency_key: key).id).to eq(active.id)
-      expect(other.id).not_to eq(active.id)
-    end
+  it 'allows a new occurrence to reuse a terminal task key' do
+    first = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    first.update(status: 'completed')
 
-    it 'allows valid creation with the same key after a foreign-key failure' do
-      key = "rollback-#{SecureRandom.hex(12)}"
-      expect do
-        described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
-      end.to raise_error(Sequel::ForeignKeyConstraintViolation)
+    expect(described_class.find_active_by_idempotency_key(key)).to be_nil
+    next_occurrence = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    expect(next_occurrence.id).not_to eq(first.id)
+    expect(described_class[first.id].status).to eq('completed')
+    expect(described_class.find_active_by_idempotency_key(key).id).to eq(next_occurrence.id)
+  end
 
-      task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
-      expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])
-    end
+  it 'reuses a namespaced completed task key while retaining the next active occurrence' do
+    completed = described_class.create_idempotent({ status: 'task.completed' }, idempotency_key: key)
+    expect(described_class.find_active_by_idempotency_key(key)).to be_nil
+
+    running = described_class.create_idempotent({ status: 'task.running' }, idempotency_key: key)
+    duplicate = described_class.create_idempotent({ status: 'task.queued' }, idempotency_key: key)
+    expect(running.id).not_to eq(completed.id)
+    expect(duplicate.values).to include(id: running.id, status: 'task.running')
+    expect(described_class[completed.id].status).to eq('task.completed')
+  end
+
+  it 'allows key reuse at the explicit TTL boundary' do
+    now = Time.local(2026, 11, 3, 12)
+    allow(Time).to receive(:now).and_return(now)
+    first = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 60)
+    expect(described_class.find_active_by_idempotency_key(key, now: now + 59).id).to eq(first.id)
+    expect(described_class.find_active_by_idempotency_key(key, now: now + 60)).to be_nil
+
+    allow(Time).to receive(:now).and_return(now + 60)
+    replacement = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key, ttl: 120)
+    expect(replacement.id).not_to eq(first.id)
+    expect(replacement.idempotency_expires_at).to eq(now + 180)
+  end
+
+  it 'derives a stable key from the explicit payload rather than unrelated model values' do
+    first = described_class.create_idempotent({ status: 'pending' }, payload: { b: 2, a: 1 })
+    duplicate = described_class.create_idempotent({ status: 'running' }, payload: { 'a' => 1, 'b' => 2 })
+    expect(duplicate.id).to eq(first.id)
+    expect(duplicate.status).to eq('pending')
+  end
+
+  it 'retains task log evidence when a task is removed' do
+    task = described_class.create(status: 'completed')
+    record = Legion::Data::Model::TaskLog.create(task_id: task.id, entry: 'completed work')
+    task.delete
+
+    persisted = Legion::Data::Model::TaskLog[uuid: record[:uuid]]
+    expect(persisted.values).to include(task_id: nil, entry: 'completed work')
+  end
+
+  it 'allows the same idempotency key after an unrelated foreign-key failure' do
+    expect do
+      described_class.create_idempotent({ status: 'pending', function_id: -1 }, idempotency_key: key)
+    end.to raise_error(Sequel::ForeignKeyConstraintViolation)
+    task = described_class.create_idempotent({ status: 'pending' }, idempotency_key: key)
+    expect(described_class.where(idempotency_key: key).select_map(:id)).to eq([task.id])
+  end
+
+  it 'canonicalizes equivalent frozen instants without mutating caller timezone' do
+    local = Time.new(2026, 10, 30, 12, 0, 0, '+05:30').freeze
+    utc = local.getutc.freeze
+    expect(described_class.idempotency_key_for({ at: local })).to eq(described_class.idempotency_key_for({ at: utc }))
+    expect(local.utc_offset).to eq(19_800)
   end
 end

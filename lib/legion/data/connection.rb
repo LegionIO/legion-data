@@ -2,7 +2,6 @@
 
 require 'legion/logging/helper'
 require 'legion/data/auth_failure_handler'
-require 'legion/data/connection_pool'
 
 require 'fileutils'
 require 'sequel'
@@ -166,52 +165,43 @@ module Legion
       class << self
         include Legion::Logging::Helper
 
-        attr_reader :sequel
-
-        def sequel=(database)
-          if database
-            pool = database.pool
-            pool.extend(Legion::Data::ConnectionPool) unless pool.is_a?(Legion::Data::ConnectionPool)
-          end
-          Legion::Data.reset_privileges!
-          @sequel = database
-        end
+        attr_accessor :sequel
 
         def adapter
-          @adapter ||= Legion::Settings[:data][:adapter]&.to_sym || :sqlite
+          @adapter || Legion::Settings[:data][:adapter].to_sym
         end
 
         def setup
           Legion::Settings[:data][:connected] = false
           @sequel&.disconnect
           @sequel = nil
-          @adapter = Legion::Settings[:data][:adapter]&.to_sym || :sqlite
+          @adapter = Legion::Settings[:data][:adapter].to_sym
           opts = sequel_opts
           log.info("Legion::Data::Connection setup adapter=#{adapter}")
           @fallback_active = false
           @replica_servers = []
-          self.sequel = if adapter == :sqlite
-                          ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
-                        else
-                          attempted_adapter = adapter
-                          begin
-                            ::Sequel.connect(connection_opts_for(adapter: attempted_adapter, opts: opts))
-                          rescue UnresolvedCredentialError => e
-                            handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
-                            raise
-                          rescue ::Sequel::DatabaseConnectionError => e
-                            raise unless dev_fallback?
+          @sequel = if adapter == :sqlite
+                      ::Sequel.connect(opts.merge(adapter: :sqlite, database: sqlite_path))
+                    else
+                      attempted_adapter = adapter
+                      begin
+                        ::Sequel.connect(connection_opts_for(adapter: attempted_adapter, opts: opts))
+                      rescue UnresolvedCredentialError => e
+                        handle_exception(e, level: :fatal, handled: false, operation: :data_connect)
+                        raise
+                      rescue StandardError => e
+                        raise unless dev_fallback?
 
-                            log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
-                            log.error("Legion::Data WARNING: Data written to SQLite will NOT be visible when #{attempted_adapter} reconnects. " \
-                                      'Apollo knowledge, audit logs, and other DB-backed services will use a local-only store.')
-                            handle_exception(e, level: :error, handled: true, operation: :shared_connect, fallback: :sqlite)
-                            @adapter = :sqlite
-                            @fallback_active = true
-                            sqlite_opts = sequel_opts
-                            ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
-                          end
-                        end
+                        log.error("Legion::Data FALLING BACK TO SQLITE — #{attempted_adapter} network DB connection failed: #{e.message}")
+                        log.error("Legion::Data WARNING: Data written to SQLite will NOT be visible when #{attempted_adapter} reconnects. " \
+                                  'Apollo knowledge, audit logs, and other DB-backed services will use a local-only store.')
+                        handle_exception(e, level: :error, handled: true, operation: :shared_connect, fallback: :sqlite)
+                        @adapter = :sqlite
+                        @fallback_active = true
+                        sqlite_opts = sequel_opts
+                        ::Sequel.connect(sqlite_opts.merge(adapter: :sqlite, database: sqlite_path))
+                      end
+                    end
           @replica_servers = @sequel.opts.fetch(:servers, {}).keys
           log_connection_info
           configure_extensions
@@ -230,8 +220,7 @@ module Legion
             adapter:            adapter,
             connected:          Legion::Settings[:data][:connected],
             fallback_active:    @fallback_active || false,
-            configured_adapter: Legion::Settings[:data][:adapter]&.to_sym || :sqlite,
-            shutdown:           @sequel&.pool&.shutdown_status,
+            configured_adapter: Legion::Settings[:data][:adapter].to_sym,
             sequel_alive:       (begin
               !@sequel&.test_connection.nil?
             rescue StandardError => e
@@ -298,26 +287,14 @@ module Legion
         end
 
         def shutdown
-          database = @sequel
-          logger = @query_file_logger
-          on_closed = proc do
-            logger&.close
-            if @sequel.equal?(database)
-              @query_file_logger = nil
-              @fallback_active = false
-              @replica_servers = []
-              Legion::Settings[:data][:connected] = false
-            end
-            log.info 'Legion::Data connection closed'
-          end
-          unless database
-            on_closed.call
-            return true
-          end
-
-          closed = database.pool.shutdown(timeout: Legion::Settings[:data][:shutdown_timeout], &on_closed)
-          log.warn("Legion::Data shutdown incomplete: #{database.pool.shutdown_status}") unless closed
-          closed
+          @sequel&.disconnect
+          @query_file_logger&.close
+          @query_file_logger = nil
+          @fallback_active = false
+          @replica_servers = []
+          Legion::Settings[:data][:connected] = false
+          log.info 'Legion::Data connection closed'
+          true
         end
 
         def reconnect_with_fresh_creds
@@ -376,7 +353,7 @@ module Legion
           return creds if adapter == :sqlite
           return creds unless defined?(Legion::Crypt::TLS)
 
-          tls_settings = data_tls_settings
+          tls_settings = Legion::Settings[:data][:tls]
           return creds unless tls_settings[:enabled] == true
 
           tls = Legion::Crypt::TLS.resolve(tls_settings, port: port)
@@ -424,15 +401,6 @@ module Legion
 
         private
 
-        def data_tls_settings
-          return {} unless defined?(Legion::Settings)
-
-          Legion::Settings[:data][:tls] || {}
-        rescue StandardError => e
-          handle_exception(e, level: :warn, handled: true, operation: :data_tls_settings)
-          {}
-        end
-
         def log_connection_info
           if adapter == :sqlite
             log.info "Connected to SQLite at #{sqlite_path}"
@@ -464,7 +432,7 @@ module Legion
         end
 
         def sqlite_path
-          path = Legion::Settings[:data][:creds][:database] || 'legionio.db'
+          path = Legion::Settings[:data][:creds][:database]
           return path if File.absolute_path?(path)
 
           base_dir = File.expand_path('~/.legionio/data')
@@ -610,7 +578,7 @@ module Legion
             stats[pragma.to_sym] = val unless val.nil?
           end
 
-          db_path = Legion::Settings[:data][:creds][:database] || 'legionio.db'
+          db_path = Legion::Settings[:data][:creds][:database]
           stats[:file_size] = File.size(db_path) if File.exist?(db_path)
           stats[:database_size_bytes] = (stats[:page_size].to_i * stats[:page_count].to_i) if stats[:page_size] && stats[:page_count]
           stats
@@ -698,15 +666,14 @@ module Legion
 
           install_auth_failure_hook
         rescue StandardError => e
-          handle_exception(e, level: :error, handled: false, operation: :configure_extensions, adapter: adapter)
-          raise
+          handle_exception(e, level: :warn, handled: true, operation: :configure_extensions, adapter: adapter)
+          raise e
         end
 
         def install_auth_failure_hook
           Legion::Data::AuthFailureHandler.install(@sequel)
         rescue StandardError => e
-          handle_exception(e, level: :error, handled: false, operation: :install_auth_failure_hook)
-          raise
+          handle_exception(e, level: :warn, handled: true, operation: :install_auth_failure_hook)
         end
 
         def build_data_logger

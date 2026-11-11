@@ -12,7 +12,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: LegionIO/.github/.github/workflows/ci.yml@main
+    uses: LegionIO/.github/.github/workflows/ci.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
 
   ci-postgres:
     name: "RSpec (PostgreSQL)"
@@ -61,7 +61,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    uses: LegionIO/.github/.github/workflows/security-scan.yml@main
+    uses: LegionIO/.github/.github/workflows/security-scan.yml@e0fc7364b73f446d4cb9bdc162a66ed34bf0daa7
 
   version-changelog:
     permissions:

@@ -2,15 +2,15 @@
 
 require 'digest'
 require 'legion/json'
+require 'legion/data/task/status'
 require 'time'
 
 module Legion
   module Data
     module Model
       class Task < Sequel::Model
-        TERMINAL_STATUSES = %w[
-          completed complete failed error cancelled canceled timeout timed_out
-        ].freeze
+        TERMINAL_STATUSES = (Legion::Data::Task::Status::TERMINAL_STATUSES +
+                             Legion::Data::Task::Status::LEGACY_TERMINAL_STATUSES).freeze
 
         many_to_one :function
         many_to_one :relationship
@@ -60,9 +60,9 @@ module Legion
           when Array
             value.map { |item| canonical_payload(item) }
           when Time
-            value.utc.iso8601(6)
+            value.getutc.iso8601(6)
           when DateTime
-            value.to_time.utc.iso8601(6)
+            value.to_time.getutc.iso8601(6)
           else
             value
           end
