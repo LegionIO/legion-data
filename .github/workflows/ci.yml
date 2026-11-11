@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: legion
           POSTGRES_PASSWORD: legion
@@ -42,13 +42,23 @@ jobs:
           bundler-cache: true
       - name: Run RSpec (PostgreSQL adapter)
         env:
+          HOME: ${{ runner.temp }}/legion-data-postgres-home
+          LEGION_DNS_BOOTSTRAP: "false"
           LEGION_DATA_ADAPTER: postgres
           LEGION_DATA_HOST: 127.0.0.1
           LEGION_DATA_PORT: 5432
           LEGION_DATA_USER: legion
           LEGION_DATA_PASSWORD: legion
           LEGION_DATA_DATABASE: legionio
-        run: bundle exec rspec
+        run: |
+          mkdir -p "$HOME" tmp
+          bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt > tmp/rspec_console.log 2>&1
+      - name: Upload PostgreSQL spec results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspec-postgres
+          path: tmp/rspec_*
 
   lint:
     permissions:

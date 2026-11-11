@@ -19,15 +19,30 @@ Legion::Logging.setup(log_file: './legion.log', level: 'fatal')
 Legion::Settings.load
 require 'legion/data'
 
-Legion::Settings[:data][:adapter] = 'sqlite'
-Legion::Settings[:data][:dev_mode] = true
-Legion::Settings[:data][:creds] ||= {}
-Legion::Settings[:data][:creds][:database] = 'legion_test.db'
+test_adapter = ENV.fetch('LEGION_DATA_ADAPTER', 'sqlite')
+Legion::Settings[:data][:adapter] = test_adapter
+Legion::Settings[:data][:dev_mode] = false
+Legion::Settings[:data][:dev_fallback] = false
 
-db_path = File.expand_path('~/.legionio/data/legion_test.db')
-FileUtils.rm_f(db_path)
+case test_adapter
+when 'sqlite'
+  Legion::Settings[:data][:creds] = { database: 'legion_test.db' }
+  FileUtils.rm_f(File.expand_path('~/.legionio/data/legion_test.db'))
+when 'postgres'
+  Legion::Settings[:data][:creds] = {
+    host:     ENV.fetch('LEGION_DATA_HOST'),
+    port:     Integer(ENV.fetch('LEGION_DATA_PORT', '5432')),
+    user:     ENV.fetch('LEGION_DATA_USER'),
+    password: ENV.fetch('LEGION_DATA_PASSWORD', ''),
+    database: ENV.fetch('LEGION_DATA_DATABASE')
+  }
+else
+  raise ArgumentError, "Unsupported test database adapter: #{test_adapter}"
+end
 
 Legion::Data.setup
+raise "Expected #{test_adapter}, connected to #{Legion::Data.connection.database_type}" unless Legion::Data.connection.database_type.to_s == test_adapter
+
 Legion::Data::Migration.migrate(Legion::Data::Connection.sequel,
                                 File.expand_path('../lib/legion/data/migrations', __dir__))
 

@@ -1,0 +1,77 @@
+name: Database Migrations
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  databases:
+    name: "Migrations (${{ matrix.adapter }}, Ruby ${{ matrix.ruby }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [sqlite, postgres]
+        ruby: ['3.4', '4.0']
+    services:
+      postgres:
+        image: ${{ matrix.adapter == 'postgres' && 'pgvector/pgvector:0.8.7-pg17' || '' }}
+        env:
+          POSTGRES_USER: legion
+          POSTGRES_PASSWORD: legion
+          POSTGRES_DB: legionio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_DNS_BOOTSTRAP: "false"
+      LEGION_DATA_ADAPTER: ${{ matrix.adapter }}
+      LEGION_DATA_HOST: 127.0.0.1
+      LEGION_DATA_PORT: 5432
+      LEGION_DATA_USER: legion
+      LEGION_DATA_PASSWORD: legion
+      LEGION_DATA_DATABASE: legionio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby == '4.0' && '4.0.5' || matrix.ruby }}
+          bundler-cache: true
+      - name: Verify actual database backend
+        env:
+          HOME: ${{ runner.temp }}/legion-data-migration-home
+        run: |
+          mkdir -p "$HOME"
+          bundle exec ruby -rrspec -e '
+            require_relative "spec/spec_helper"
+            db = Legion::Data.connection
+            puts "Database adapter: #{db.database_type}; schema version: #{db[:schema_info].get(:version)}"
+            if db.database_type == :postgres
+              version = db[:pg_extension].where(extname: "vector").get(:extversion)
+              abort "pgvector is not installed" unless version
+              puts "pgvector version: #{version}"
+            end
+            Legion::Data.shutdown
+          '
+      - name: Run full RSpec suite
+        env:
+          HOME: ${{ runner.temp }}/legion-data-migration-home
+        run: |
+          mkdir -p "$HOME" tmp
+          bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt > tmp/rspec_console.log 2>&1
+      - name: Upload database spec results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrations-${{ matrix.adapter }}-ruby-${{ matrix.ruby }}
+          path: tmp/rspec_*

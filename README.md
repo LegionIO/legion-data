@@ -599,7 +599,7 @@ The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::
 
 Migrations 140–155 preserve existing rows and hashes, replace active hash uniqueness with scope/owner uniqueness, and leave legacy provenance unknown for application-driven reembedding. Each file performs one schema or data change on one table. The new ownership index is created before the old global hash index is removed, so intermediate versions retain deduplication. Complete the entire range before deploying `lex-apollo >= 0.4.45`.
 
-Migrations 140–142 remove the three published PostgreSQL ANN indexes. Additional operator-created direct-column ANN indexes require reconciliation before migration 143 or 144 can widen the vector column. PostgreSQL can simplify an `embedding::vector(1024)` index expression into a direct-column index when the column already has that type; a dimension predicate alone does not make it compatible. Genuine dimension-constrained expression indexes and unrelated indexes remain untouched.
+Migrations 140–142 remove the three published PostgreSQL ANN indexes. Reconcile additional operator-created direct-column ANN indexes before widening: indexes requiring a rebuild can stop migration 143 or 144, while unfiltered indexes can survive widening but reject inserts with new dimensions. PostgreSQL can simplify an `embedding::vector(1024)` index expression into a direct-column index when the column already has that type; a dimension predicate alone does not make it compatible. Genuine dimension-constrained expression indexes and unrelated indexes remain untouched.
 
 Sequel commits each numbered migration separately on PostgreSQL and SQLite. A failure leaves the schema version at the last successful step. The index removals can be rolled back before the storage conversion; additive columns and lookup indexes have their own reversal paths. Storage conversion, PostgreSQL dimension backfills, and removal of global hash uniqueness deliberately reject rollback rather than deleting vectors, erasing application-written dimensions, or discarding ownership-scoped records.
 
@@ -745,15 +745,25 @@ bundle exec rspec --format json --out tmp/rspec_results.json --format progress -
 bundle exec rubocop -A   # zero offenses expected
 ```
 
-Task-execution lifecycle and concurrency regressions use temporary SQLite storage by default.
-To exercise the same lifecycle suite on PostgreSQL, set `LEGION_DATA_ADAPTER=postgres` and
+The full suite defaults to SQLite. Set `LEGION_DATA_ADAPTER=postgres` plus
 `LEGION_DATA_HOST`, `LEGION_DATA_PORT`, `LEGION_DATA_USER`, `LEGION_DATA_PASSWORD`, and
-`LEGION_DATA_DATABASE` for a **disposable test database**, then run the full RSpec command
-above. These examples create and remove a random isolated schema, applying the actual task
-migrations with minimal foreign-key fixtures. This verifies PostgreSQL ownership locks,
-savepoint rollback, unique identities, and reconnect behavior; it does not claim coverage of
-the unrelated historical `pgvector` migration chain. Other suites retain their own database
-fixtures.
+`LEGION_DATA_DATABASE` to run shared model/schema tests and Apollo migration regressions
+against a **disposable PostgreSQL database**. PostgreSQL 16+ must have `vector` and
+`uuid-ossp` available; the test role needs extension-installation and `CREATEDB` privileges.
+Apollo examples create and drop uniquely named databases and apply the real migration
+chain through 139 before exercising 140–155. They cover native vectors, JSONB provenance,
+dimension backfills, ANN-index rollback, and ownership uniqueness. SQLite-specific unit
+fixtures and local cognitive storage remain SQLite. Connection failure never falls back
+to SQLite, and startup verifies that the actual adapter matches the requested adapter.
+
+Always run Data specs with a fresh temporary `HOME`, `LEGION_DNS_BOOTSTRAP=false`, and the
+real `RBENV_ROOT` when using rbenv. The SQLite setup deletes its test database under HOME.
+
+The existing `ci.yml` workflow retains all its jobs, including PostgreSQL 16 with pgvector.
+The separate `database-migrations.yml` workflow adds SQLite and PostgreSQL 17/pgvector
+coverage on Ruby 3.4 and 4.0. Each matrix job verifies its actual backend, runs the full
+suite, and uploads JSON results and logs. PostgreSQL jobs must exercise real PostgreSQL,
+not merely start a service alongside SQLite tests.
 
 This repo also includes a pre-commit configuration:
 

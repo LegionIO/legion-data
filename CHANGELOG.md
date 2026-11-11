@@ -4,10 +4,12 @@
 
 ### Added
 - Add migrations 140–155 for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON-text vectors on SQLite and unconstrained native vectors on PostgreSQL.
+- Add a separate database-migration workflow covering SQLite and PostgreSQL 17/pgvector on Ruby 3.4 and 4.0 without removing the existing CI workflow or jobs.
 
 ### Fixed
 - Replace global active content-hash uniqueness with scope/owner uniqueness while preserving original hashes, existing records, legacy null owners, and archived copies.
 - Preserve PostgreSQL vectors while removing the three published direct-column ANN indexes; retain unrelated and genuine dimension-constrained expression indexes. Additional operator-created direct ANN indexes require reconciliation before widening. Legacy provenance remains unknown until application-driven reembedding.
+- Honor the requested test adapter, disable SQLite fallback, and verify the actual connection. Exercise Apollo migration regressions against disposable PostgreSQL databases; provide pgvector in the existing PostgreSQL 16 CI job.
 
 ### Changed
 - Split the unpublished Apollo changes into one operation on one table per migration: index removals, storage conversion, individual metadata columns, dimension backfills, lookup indexing, and ownership uniqueness. Create the replacement unique index before removing the old one.
