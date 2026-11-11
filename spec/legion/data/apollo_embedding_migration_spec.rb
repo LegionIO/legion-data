@@ -20,7 +20,7 @@ RSpec.describe 'Apollo embedding and ownership migration' do
   end
 
   def apollo_upgrade(**)
-    Sequel::Migrator.run(db, migration_path, target: 140)
+    Sequel::Migrator.run(db, migration_path, target: 141)
   end
 
   it 'upgrades the real version 139 tables without changing existing records or inventing provenance' do
@@ -35,22 +35,18 @@ RSpec.describe 'Apollo embedding and ownership migration' do
         row.merge(embedding: nil, embedding_space_id: nil, embedding_dimensions: nil, embedding_provenance: nil)
       end)
     end
-    expect(db[:schema_info].get(:version)).to eq(140)
+    expect(db[:schema_info].get(:version)).to eq(141)
   end
 
-  it 'preserves pre-existing SQLite vectors byte-for-byte without guessing their model' do
+  it 'fails cleanly when a manually added embedding column already exists' do
     %i[apollo_entries apollo_entries_archive].each do |table|
       db.alter_table(table) { add_column :embedding, String, text: true }
       apollo_insert(table: table, content_hash: 'legacy', embedding: '[0.25, 0.75, -0.5]', access_scope: 'team')
     end
 
-    apollo_upgrade
-
-    %i[apollo_entries apollo_entries_archive].each do |table|
-      expect(db[table].first).to include(embedding: '[0.25, 0.75, -0.5]', content_hash: 'legacy', access_scope: 'team',
-                                         identity_principal_id: nil, embedding_space_id: nil, embedding_dimensions: nil,
-                                         embedding_provenance: nil)
-    end
+    expect { apollo_upgrade }.to raise_error(Sequel::DatabaseError)
+    expect(db[:schema_info].get(:version)).to eq(139)
+    expect(db[:apollo_entries].first).to include(embedding: '[0.25, 0.75, -0.5]', content_hash: 'legacy')
   end
 
   it 'stores different vector dimensions and explicit provenance in both tables' do
@@ -134,8 +130,8 @@ RSpec.describe 'Apollo embedding and ownership migration' do
     apollo_insert(content_hash: 'two-owners', access_scope: 'private', identity_principal_id: 42, embedding: '[1,2,3]')
     snapshots = db[:apollo_entries].all
 
-    expect { Sequel::Migrator.run(db, migration_path, target: 139) }.to raise_error(Sequel::Error)
+    expect { Sequel::Migrator.run(db, migration_path, target: 140) }.to raise_error(Sequel::Error)
     expect(db[:apollo_entries].all).to eq(snapshots)
-    expect(db[:schema_info].get(:version)).to eq(140)
+    expect(db[:schema_info].get(:version)).to eq(141)
   end
 end

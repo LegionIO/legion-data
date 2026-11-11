@@ -3,15 +3,15 @@
 ## [1.11.8] - 2026-11-10
 
 ### Added
-- Add forward migration 140 for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON text vectors on SQLite and unconstrained native vectors on PostgreSQL.
+- Add forward migrations 140 (`apollo_entries`) and 141 (`apollo_entries_archive`) for Apollo embedding-space IDs, actual dimensions, and provenance on active/archive entries; use JSON text vectors on SQLite and unconstrained native vectors on PostgreSQL.
 
 ### Fixed
 - Replace global active content-hash uniqueness with scope/owner uniqueness while preserving original hashes, existing records, legacy null owners, and archived copies.
 - Preserve PostgreSQL vectors while removing incompatible direct-column ANN indexes; retain unrelated and dimension-constrained expression indexes. Legacy provenance remains unknown until application-driven reembedding.
 
 ### Changed
-- Migration 140 is intentionally irreversible: restoring fixed vector dimensions or global uniqueness could reject or destroy newly valid data.
-- Integrate main through 1.11.7 and preserve its published migrations, including 139 (`task_logs`); move the unmerged Apollo migration to 140.
+- Migrations 140–141 are intentionally irreversible: restoring fixed vector dimensions or global uniqueness could reject or destroy newly valid data.
+- Integrate main through 1.11.7 and preserve its published migrations, including 139 (`task_logs`); move the unmerged Apollo migrations to 140–141, one table per migration.
 
 ## [1.11.7] - 2026-11-06
 

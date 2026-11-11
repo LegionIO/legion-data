@@ -595,9 +595,9 @@ All new tables follow a column convention. Required fields are present on every 
 | `ApolloExpertise` | `apollo_expertise` | Per-agent domain expertise — PostgreSQL only |
 | `ApolloAccessLog` | `apollo_access_log` | Apollo access audit log — PostgreSQL only |
 
-The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migration 140 adds active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
+The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migrations 140–141 add active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
 
-Migration 140 preserves existing rows and hashes, replaces active hash uniqueness with scope/owner uniqueness, and leaves legacy provenance unknown for application-driven reembedding. It drops incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply it before deploying `lex-apollo >= 0.4.45`.
+Migrations 140–141 preserve existing rows and hashes, replace active hash uniqueness with scope/owner uniqueness, and leave legacy provenance unknown for application-driven reembedding. They drop incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply them before deploying `lex-apollo >= 0.4.45`.
 
 The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces provide cleaner Sequel model names for API-facing code while preserving the legacy flat model classes. Official LLM lifecycle models live under `Legion::Data::Models::LLM`.
 
@@ -675,7 +675,7 @@ Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true
 | 137 | Preserve task archive payloads and identities |
 | 138 | Serialized audit and governance append claims |
 | 139 | `task_logs` table and `TaskLog` model |
-| 140 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness |
+| 140–141 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness (one table per migration) |
 
 Run migrations standalone:
 
