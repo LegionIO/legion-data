@@ -1,5 +1,11 @@
 # Legion::Data Changelog
 
+## [1.11.9] - 2026-11-11
+
+### Fixed
+- Fix the non-tenant encryption crash in #87 by using the supported `Legion::Crypt.cs` key API instead of `default_encryption_key`. Crypt initialization failures still propagate rather than falling back to a development key; tenant-scoped key retrieval is unchanged.
+- Verify default-scoped encrypted-column persistence across fresh processes with real `legion-crypt`, including invalid-key rejection. Crypt remains a test-only dependency, not a required runtime dependency of Data.
+
 ## [1.11.8] - 2026-11-10
 
 ### Added

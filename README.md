@@ -526,7 +526,16 @@ Restore preserves original IDs and restores parent/master links after inserting 
 
 Each archive batch receives a UUID before upload. S3, Azure, and local object paths use `legion-archive/<table>/<year>/<month>/batch_<uuid>.jsonl.gz`; the same UUID is stored in `archive_manifest.batch_id`. Repeated runs do not reuse numbered object names. Existing manifest paths remain valid; no stored objects are renamed. Direct `Archiver.upload_batch` callers must supply `batch_id:` instead of `batch_n:`.
 
-### Encryption Key Cache
+### Encryption Keys and Cache
+
+When Crypt and `Crypt::PartitionKeys` are loaded, the default scope (`tenant_id: nil`) uses
+the supported `Legion::Crypt.cs` cluster-key API. Keep the cluster secret persistent across
+restarts to retain access to encrypted records. Crypt initialization failures propagate;
+they do not select the development fallback key. Encrypted columns require binary storage.
+The no-Crypt development fallback is unchanged.
+
+This default-scope fix does not repair tenant-scoped Crypt integration or implement the
+separate per-tenant Vault master-key provisioning and erasure lifecycle.
 
 The default scope (`tenant_id: nil`) and tenant IDs have separate cache entries, including a tenant literally named `__default__`. Restart processes or clear existing key-provider caches when upgrading. This fix does not rewrite existing ciphertext: if that tenant name was used with the old cache, assess records encrypted with the wrong scope's key and re-encrypt them with the intended key. The reader does not fall back to another scope's key.
 

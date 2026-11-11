@@ -30,7 +30,7 @@ module Legion
             log.debug "Deriving Vault key for tenant #{tenant_id}"
             Legion::Crypt::PartitionKeys.derive(tenant_id: tenant_id)
           elsif crypt_available?
-            Legion::Crypt.default_encryption_key
+            Legion::Crypt.cs
           else
             log.warn 'Legion::Crypt unavailable, falling back to dev encryption key'
             local_key
