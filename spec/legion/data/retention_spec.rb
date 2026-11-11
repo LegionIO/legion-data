@@ -8,6 +8,7 @@ RSpec.describe Legion::Data::Retention do
   let(:db) { Legion::Data.connection }
   let(:table) { :retention_test_records }
   let(:archive_table) { :retention_test_records_archive }
+  let(:retention_trigger_functions) { [] }
 
   before(:each) do
     db.drop_table?(table)
@@ -23,10 +24,17 @@ RSpec.describe Legion::Data::Retention do
   after(:each) do
     db.drop_table?(archive_table)
     db.drop_table?(table)
+    retention_trigger_functions.each { |name| db.drop_function(name) }
   end
 
   def insert_record(name:, created_at:)
     db[table].insert(name: name, created_at: created_at)
+  end
+
+  def retention_create_postgres_trigger(table:, name:, body:, events:, condition:, after: false)
+    db.create_function(name, "BEGIN #{body} END;", language: :plpgsql, returns: :trigger)
+    retention_trigger_functions << name
+    db.create_trigger(table, name, name, events: events, each_row: true, when: condition, after: after)
   end
 
   describe '.archive_table_name' do
@@ -115,17 +123,29 @@ RSpec.describe Legion::Data::Retention do
       described_class.archive_old_records(table: table)
       old_ids = Array.new(7) { |index| insert_record(name: "old-#{index}", created_at: Time.now - (100 * 86_400)) }
       recent_id = insert_record(name: 'recent', created_at: Time.now)
-      db.run <<~SQL
-        CREATE TRIGGER fail_archive_batch BEFORE INSERT ON #{archive_table}
-        WHEN NEW.id = #{old_ids[3]}
-        BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END
-      SQL
+      if db.database_type == :postgres
+        retention_create_postgres_trigger(
+          table: archive_table, name: :fail_archive_batch, events: :insert,
+          condition: { Sequel[:new][:id] => old_ids[3] },
+          body: "RAISE EXCEPTION 'injected archive failure';"
+        )
+      else
+        db.run <<~SQL
+          CREATE TRIGGER fail_archive_batch BEFORE INSERT ON #{archive_table}
+          WHEN NEW.id = #{old_ids[3]}
+          BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END
+        SQL
+      end
 
       expect { described_class.archive_old_records(table: table, batch_size: 2) }.to raise_error(Sequel::DatabaseError)
       expect(db[archive_table].order(:id).select_map(:id)).to eq(old_ids.first(2))
       expect(db[table].order(:id).select_map(:id)).to eq(old_ids.drop(2) + [recent_id])
 
-      db.run('DROP TRIGGER fail_archive_batch')
+      if db.database_type == :postgres
+        db.drop_trigger(archive_table, :fail_archive_batch)
+      else
+        db.run('DROP TRIGGER fail_archive_batch')
+      end
       expect(described_class.archive_old_records(table: table, batch_size: 2)).to eq(archived: 5, table: table)
       expect(db[archive_table].order(:id).select_map(:id)).to eq(old_ids)
       expect(db[table].select_map(:id)).to eq([recent_id])
@@ -135,14 +155,25 @@ RSpec.describe Legion::Data::Retention do
       described_class.archive_old_records(table: table)
       insert_record(name: 'old', created_at: Time.now - (100 * 86_400))
       insert_record(name: 'newly_old', created_at: Time.now)
-      db.run <<~SQL
-        CREATE TRIGGER change_retention_candidates AFTER INSERT ON #{archive_table}
-        WHEN NEW.name = 'old'
-        BEGIN
-          UPDATE #{table} SET created_at = '2000-01-01' WHERE name = 'newly_old';
-          INSERT INTO #{table} (name, created_at) VALUES ('arrived', '2000-01-01');
-        END
-      SQL
+      if db.database_type == :postgres
+        retention_create_postgres_trigger(
+          table: archive_table, name: :change_retention_candidates, events: :insert, after: true,
+          condition: { Sequel[:new][:name] => 'old' }, body: <<~SQL
+            UPDATE #{table} SET created_at = '2000-01-01' WHERE name = 'newly_old';
+            INSERT INTO #{table} (name, created_at) VALUES ('arrived', '2000-01-01');
+            RETURN NEW;
+          SQL
+        )
+      else
+        db.run <<~SQL
+          CREATE TRIGGER change_retention_candidates AFTER INSERT ON #{archive_table}
+          WHEN NEW.name = 'old'
+          BEGIN
+            UPDATE #{table} SET created_at = '2000-01-01' WHERE name = 'newly_old';
+            INSERT INTO #{table} (name, created_at) VALUES ('arrived', '2000-01-01');
+          END
+        SQL
+      end
 
       expect(described_class.archive_old_records(table: table, batch_size: 1)).to eq(archived: 3, table: table)
       expect(db[archive_table].order(:name).select_map(:name)).to eq(%w[arrived newly_old old])
@@ -152,11 +183,18 @@ RSpec.describe Legion::Data::Retention do
     it 'rolls back archive copies when a deletion does not remove every selected row' do
       described_class.archive_old_records(table: table)
       ids = Array.new(2) { |index| insert_record(name: "old-#{index}", created_at: Time.now - (100 * 86_400)) }
-      db.run <<~SQL
-        CREATE TRIGGER refuse_retention_delete BEFORE DELETE ON #{table}
-        WHEN OLD.id = #{ids.first}
-        BEGIN SELECT RAISE(IGNORE); END
-      SQL
+      if db.database_type == :postgres
+        retention_create_postgres_trigger(
+          table: table, name: :refuse_retention_delete, events: :delete,
+          condition: { Sequel[:old][:id] => ids.first }, body: 'RETURN NULL;'
+        )
+      else
+        db.run <<~SQL
+          CREATE TRIGGER refuse_retention_delete BEFORE DELETE ON #{table}
+          WHEN OLD.id = #{ids.first}
+          BEGIN SELECT RAISE(IGNORE); END
+        SQL
+      end
 
       expect { described_class.archive_old_records(table: table, batch_size: 2) }.to raise_error(Sequel::Error)
       expect(db[table].order(:id).select_map(:id)).to eq(ids)
