@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/logging/helper'
+require 'legion/settings'
 
 module Legion
   module Data
@@ -76,10 +77,6 @@ module Legion
           keepalives_count:              3,
           tcp_user_timeout:              15_000,
 
-          # Shutdown: max seconds to wait for checked-out connections to return before
-          # force-disconnecting them.
-          shutdown_timeout:              5,
-
           # Adapter-specific (nil = use adapter built-in default)
           connect_timeout:               nil,
           read_timeout:                  nil,
@@ -95,6 +92,7 @@ module Legion
 
           # Grouped settings
           creds:                         creds,
+          tls:                           { enabled: false },
           cache:                         cache,
           migrations:                    migrations,
           models:                        models,
@@ -141,7 +139,10 @@ module Legion
       def self.archival
         {
           retention_days:  90,
+          warm_after_days: 7,
+          cold_after_days: 90,
           batch_size:      1000,
+          tables:          %w[tasks metering_records],
           storage_backend: nil
         }
       end
@@ -158,8 +159,4 @@ module Legion
   end
 end
 
-begin
-  Legion::Settings.merge_settings('data', Legion::Data::Settings.default) if Legion.const_defined?('Settings', false)
-rescue StandardError => e
-  Legion::Data::Settings.handle_exception(e, level: :fatal, operation: :merge_settings)
-end
+Legion::Settings.register_library(:data, Legion::Data::Settings.default)

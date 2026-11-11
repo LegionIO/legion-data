@@ -4,6 +4,9 @@ source 'https://rubygems.org'
 
 gemspec
 
+settings_path = File.expand_path('../legion-settings', __dir__)
+gem 'legion-settings', path: settings_path if File.directory?(settings_path)
+
 group :test do
   gem 'rake'
   gem 'rspec'

@@ -102,16 +102,14 @@ module Legion
         end
 
         def persist_step_timings(extract_id, timings)
-          return unless defined?(Legion::Data)
+          return unless Legion::Data.connected?
 
-          connection = Legion::Data.connection
-          return unless connection&.table_exists?(:extract_step_timings)
+          existing_steps = Legion::Data::Model::ExtractStepTiming.where(extract_id: extract_id).select_map(:name)
+          timings.each do |timing|
+            next if existing_steps.include?(timing[:name])
 
-          existing_steps = connection[:extract_step_timings].where(extract_id: extract_id).select_map(:name)
-          rows = timings.reject { |timing| existing_steps.include?(timing[:name]) }.map do |timing|
-            timing.merge(extract_id: extract_id)
+            Legion::Data::Model::ExtractStepTiming.create(timing.merge(extract_id: extract_id))
           end
-          connection[:extract_step_timings].multi_insert(rows) unless rows.empty?
         rescue StandardError => e
           handle_exception(e, level: :warn, handled: true, operation: :persist_extract_step_timings,
                             extract_id: extract_id)

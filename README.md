@@ -1,8 +1,8 @@
 # legion-data
 
-Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), automatic schema migrations, Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
+Persistent database storage for the [LegionIO](https://github.com/LegionIO/LegionIO) async job engine and AI coding assistant platform. Provides database connectivity via the [Sequel ORM](https://sequel.jeremyevans.net/), numbered schema migrations, Sequel models for the full LegionIO control plane, and a parallel local SQLite database for on-node agentic cognitive state.
 
-**Version**: 1.10.29 | **Ruby**: >= 3.4 | **License**: Apache-2.0
+**Version**: 1.11.8 | **Ruby**: >= 3.4 | **License**: Apache-2.0
 
 ---
 
@@ -24,6 +24,30 @@ Core responsibilities:
 The schema is portable by default across SQLite, MySQL, and PostgreSQL. Apollo semantic storage supports PostgreSQL and SQLite; native PostgreSQL vector operations remain adapter-specific.
 
 `Legion::Data.setup` raises on fatal connection configuration, migration, or model-loading failures rather than announcing successful startup. Failed setup closes its database connections and clears readiness; fix the underlying error before retrying. Local migrations registered after startup also propagate failures and leave the local database disconnected until setup succeeds.
+
+## Framework Conventions
+
+### Startup and Table Ownership
+
+The shared database starts in this order: **connect → run migrations → load models → mark Data connected**. Cache setup and local storage setup follow. Application code uses the models registered by that lifecycle; model declarations must not be loaded before their tables are migrated.
+
+A table belongs to the component that creates and maintains its schema. A reference in an existing helper does not establish ownership. Before adding a model, identify the owning migration and its supported adapters. A PostgreSQL-only migration does not create its table on SQLite or MySQL.
+
+### Model-backed Table Access
+
+- Read and write application tables through named Sequel models, such as `Legion::Data::Model::Task`, rather than `connection[:tasks]` or `db[:tasks]`.
+- If a Data-owned table is used but lacks a model, add a normal named class under `lib/legion/data/models/` and register it in `Legion::Data::Models.models`.
+- Use the existing model namespace and association conventions. Do not replace named models with `Class.new`, anonymous models, or a facade around raw table access.
+- Shared operations can accept an explicit source model rather than infer a class from a table name. Keep transactional source and destination models on the same database.
+- Keep model instances within database operations. Return plain Hashes across module boundaries, using `.values` or an explicit result Hash.
+
+Migrations and database infrastructure still need direct Sequel database operations for schema changes, connection setup, and adapter/session management. Those operations are distinct from application-table reads and writes.
+
+### Settings
+
+Keep method-returned settings defaults in the existing methods, including `Legion::Data::Settings.default`. Do not extract that settings tree into a constant such as `CONNECTION_DEFAULTS`, a class variable, or a memoized snapshot.
+
+Register defaults through Legion Settings at library startup. Runtime code reads the current `Legion::Settings[:data]` values so configured overrides and settings reloads remain authoritative. Follow the framework's existing loading and access patterns rather than adding a second settings mechanism.
 
 ## Supported Databases
 
@@ -73,9 +97,9 @@ Legion::Data (singleton module)
 │   ├── .connection_info  # Adapter, liveness, and fallback diagnostics
 │   ├── .fallback_active? # True when dev fallback moved a network DB to SQLite
 │   ├── .stats          # Pool metrics, tuning snapshot, adapter-specific DB stats
-│   └── .shutdown       # Drain accepted work; return true only after cleanup
+│   └── .shutdown       # Disconnect shared connection; close query log
 │
-├── Migration           # Auto-migration system (numbered Sequel DSL migrations)
+├── Migration           # Numbered Sequel DSL migrations
 │
 ├── Model               # Sequel model autoloader
 │   └── Models: Extension, Function, Runner, Node, Task, TaskLog, Setting,
@@ -151,13 +175,9 @@ Legion::Data::Connection.connection_info
 Legion::Data.shutdown
 ```
 
-### Graceful Database Shutdown
+### Database Shutdown
 
-`Legion::Data.shutdown` returns `true` when the shared pool has drained and its connections and query logger are closed. An idle pool closes immediately. Once shutdown starts, new checkouts are rejected; work already accepted by the pool may finish, including nested checkouts in the same execution context.
-
-If `shutdown_timeout` expires, shutdown returns `false` rather than claiming active connections were forcibly closed. The last accepted checkout performs deferred cleanup. `Connection.connection_info[:shutdown]` reports `state` (`open`, `draining`, `closing`, `closed`, or `failed`) and `active_requests`, which counts accepted execution contexts, including pool waiters—not physical connections. A cleanup failure is logged and can be retried by calling shutdown again.
-
-Shutdown does not cancel SQL, kill worker threads, or close borrowed connections. Configure database statement timeouts separately to bound query execution. To resume work after completed shutdown, call `Legion::Data.setup`; it creates a new pool and rebinds loaded models.
+`Legion::Data.shutdown` disconnects the shared connection, closes the query log, and marks Data as disconnected. It does not cancel in-flight SQL — configure database statement timeouts separately to bound query execution. To resume work, call `Legion::Data.setup`; it creates a new connection.
 
 ### Model Associations
 
@@ -215,27 +235,53 @@ Supported formats: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.xlsx`, `
 When migration 076 is present, Extract also persists the same per-step timing rows to `extract_step_timings`
 under the returned `extract_id`.
 
-### Task Idempotency
+### Task Persistence
 
-`Task.idempotency_key_for` computes a stable SHA-256 key from canonical JSON payloads. `Task.create_idempotent`
-returns an existing non-terminal task for the same key inside the optional TTL window, or creates a new task
-with `idempotency_key` and `idempotency_expires_at` populated:
+`Legion::Data::Model::Task` is the normal Sequel model for task persistence.
+The message-processing contract assumes RabbitMQ prefetch of one: each persistence message
+performs one model insert or update, and the runtime acknowledges the message only after
+that operation succeeds. A failed write must not be acknowledged as successful.
+Data does not add message batching, attempt ownership, leases, or outbox coordination.
 
-```ruby
-task = Legion::Data::Model::Task.create_idempotent(
-  { status: 'pending', payload: Legion::JSON.dump(payload) },
-  payload: payload,
-  ttl: 300
-)
-```
+Task statuses retain their existing persisted identities in `Legion::Data::Task::Status`.
+Task rows follow the ordinary archival age, status, and dependency rules.
 
-Terminal tasks and expired TTLs allow a replacement. This database helper uses a lookup followed by an insert; concurrent callers are not guaranteed to receive the same task. It does not provide RabbitMQ delivery or execution deduplication.
+The existing model idempotency API is unchanged:
+
+- `Legion::Data::Model::Task.idempotency_key_for(payload)` computes a stable SHA-256 key from canonical JSON.
+- `create_idempotent(values, payload: nil, idempotency_key: nil, ttl: nil)` accepts a positional
+  values Hash and returns a Sequel model. Without `ttl`, it does not add an expiry.
+- `find_active_by_idempotency_key(key, now: Time.now)` reads the original `idempotency_key`
+  column and returns a Sequel model or nil. Terminal tasks and expired keys allow a new occurrence.
+
+These helpers do not promise concurrent deduplication or permanent execution identity.
+Frozen timestamp payloads are canonicalized without mutation.
+
+Migration 139 supplies the previously unprovisioned `task_logs` table and the normal model
+loader registers `Legion::Data::Model::TaskLog`. Both `TaskLog.create` and `TaskLog.insert`
+generate its public UUID and retain supplied event timestamps. `insert` supports the existing
+positional Hash and keyword-Hash call shapes and returns the inserted integer ID; `create`
+returns a model. Entries are text and may reference a task, node, or function. Removing those
+referenced records nulls the reference rather than deleting the
+log evidence. An unsupported manually created `task_logs` table requires operator
+reconciliation before upgrading: migration 139 fails safely if it already exists and never
+overwrites, truncates, or automatically adopts existing logs.
 
 ### Serialized Audit and Governance Appends
 
 After migration 138, `AuditRecord.append` serializes each chain and `EventStore.append` serializes each stream with database-backed claims, including empty chains. Different audit/event namespaces remain independent. Claim rows do not accumulate after transactions finish; failed appends roll back both claim and record.
 
 Audit tails, verification, and walks use append IDs rather than timestamps, preserving chain order across writer clock skew. Governance events retain their sequential stream numbering. PostgreSQL lock/statement timeouts and native adapter lock limits bound contention; timeout and unrelated database errors propagate rather than being retried indefinitely. MySQL claims use exclusive duplicate-key locking to avoid InnoDB shared-lock upgrade deadlocks.
+
+### Model-backed Storage Tiers
+
+```ruby
+Legion::Data::StorageTiers.archive_to_warm(
+  model: Legion::Data::Model::Task, age_days: 90, batch_size: 1000
+)
+```
+
+Pass the source Sequel model using `model:`, not a table name. The source must have `id` and `created_at` columns and use the same database as `Legion::Data::Model::DataArchive`. Selected rows are copied as JSON and deleted in the existing transaction. `export_to_cold` returns plain archived-row hashes; `stats` reports warm/cold counts.
 
 ### Bounded Retention
 
@@ -361,6 +407,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 ### Full Configuration Reference
 
+Defaults are registered when the library loads; runtime consumers read the current `Legion::Settings[:data]` tree. User configuration and subsequent settings reloads take precedence, including explicit `false` migration/TLS flags and empty archival table lists. Connection options apply on the next connection setup, while local migration registration and `Archival.archive!` (without an explicit policy) read the current configuration on each call. A full `Legion::Settings.reset!` requires explicit library-default registration again before using Data.
+
 ```json
 {
   "data": {
@@ -390,6 +438,15 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     "replicas": [],
 
     "creds": { "database": "legionio.db" },
+    "tls": { "enabled": false },
+    "archival": {
+      "retention_days": 90,
+      "warm_after_days": 7,
+      "cold_after_days": 90,
+      "batch_size": 1000,
+      "tables": ["tasks", "metering_records"],
+      "storage_backend": null
+    },
 
     "migrations": {
       "continue_on_fail": false,
@@ -538,9 +595,9 @@ All new tables follow a column convention. Required fields are present on every 
 | `ApolloExpertise` | `apollo_expertise` | Per-agent domain expertise — PostgreSQL only |
 | `ApolloAccessLog` | `apollo_access_log` | Apollo access audit log — PostgreSQL only |
 
-The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migration 139 adds active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
+The legacy flat Apollo classes above remain PostgreSQL-only. Use `Legion::Data::Model::Apollo::{Entry,Relation,Expertise,AccessLog}` for PostgreSQL or SQLite; namespaced models load when their backing tables exist. Migration 140 adds active/archive embedding-space IDs, actual dimensions, and JSONB/PostgreSQL or JSON-text/SQLite provenance. PostgreSQL uses unconstrained native vectors; SQLite uses JSON-text vectors.
 
-Migration 139 preserves existing rows and hashes, replaces active hash uniqueness with scope/owner uniqueness, and leaves legacy provenance unknown for application-driven reembedding. It drops incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply it before deploying `lex-apollo >= 0.4.45`.
+Migration 140 preserves existing rows and hashes, replaces active hash uniqueness with scope/owner uniqueness, and leaves legacy provenance unknown for application-driven reembedding. It drops incompatible direct-column ANN indexes while preserving dimension-constrained expression indexes and unrelated indexes. Rollback is intentionally rejected rather than losing valid mixed-dimension or cross-owner records. Apply it before deploying `lex-apollo >= 0.4.45`.
 
 The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces provide cleaner Sequel model names for API-facing code while preserving the legacy flat model classes. Official LLM lifecycle models live under `Legion::Data::Models::LLM`.
 
@@ -584,7 +641,7 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 | `csv` (>= 3.2) | CSV extraction handler |
 | `legion-json` | JSON serialization via Legion::JSON |
 | `legion-logging` (>= 1.5.0) | Structured logging |
-| `legion-settings` (>= 1.3.26) | Configuration management |
+| `legion-settings` (>= 1.4.5) | Configuration management |
 | `mysql2` (>= 0.5.5) | MySQL adapter (optional) |
 | `pg` (>= 1.5) | PostgreSQL adapter (optional) |
 
@@ -592,7 +649,7 @@ The `Legion::Data::Model::Identity::*`, `Apollo::*`, and `RBAC::*` namespaces pr
 
 ## Migrations
 
-Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). Key milestones:
+Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true`). The files in `lib/legion/data/migrations/` are the authoritative inventory. Key milestones:
 
 | Range | What was added |
 |-------|---------------|
@@ -617,7 +674,8 @@ Numbered Sequel DSL migrations run automatically on startup (`auto_migrate: true
 | 119–120 | Portable missing Apollo tables and indexes |
 | 137 | Preserve task archive payloads and identities |
 | 138 | Serialized audit and governance append claims |
-| 139 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness |
+| 139 | `task_logs` table and `TaskLog` model |
+| 140 | Apollo embedding provenance, mixed-dimension vectors, and ownership-scoped content-hash uniqueness |
 
 Run migrations standalone:
 
@@ -673,9 +731,19 @@ bundle exec legionio_migrate
 git clone https://github.com/LegionIO/legion-data
 cd legion-data
 bundle install
-bundle exec rspec        # all tests must pass
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
 bundle exec rubocop -A   # zero offenses expected
 ```
+
+Task-execution lifecycle and concurrency regressions use temporary SQLite storage by default.
+To exercise the same lifecycle suite on PostgreSQL, set `LEGION_DATA_ADAPTER=postgres` and
+`LEGION_DATA_HOST`, `LEGION_DATA_PORT`, `LEGION_DATA_USER`, `LEGION_DATA_PASSWORD`, and
+`LEGION_DATA_DATABASE` for a **disposable test database**, then run the full RSpec command
+above. These examples create and remove a random isolated schema, applying the actual task
+migrations with minimal foreign-key fixtures. This verifies PostgreSQL ownership locks,
+savepoint rollback, unique identities, and reconnect behavior; it does not claim coverage of
+the unrelated historical `pgvector` migration chain. Other suites retain their own database
+fixtures.
 
 This repo also includes a pre-commit configuration:
 

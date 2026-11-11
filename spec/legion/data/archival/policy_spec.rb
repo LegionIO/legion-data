@@ -4,18 +4,34 @@ require 'spec_helper'
 require 'legion/data/archival/policy'
 
 RSpec.describe Legion::Data::Archival::Policy do
-  describe '.new' do
-    it 'uses defaults' do
-      policy = described_class.new
-      expect(policy.warm_after_days).to eq(7)
-      expect(policy.cold_after_days).to eq(90)
-      expect(policy.batch_size).to eq(1000)
+  describe '.from_settings' do
+    around do |example|
+      original = Legion::Settings[:data][:archival]
+      begin
+        example.run
+      ensure
+        Legion::Settings[:data][:archival] = original
+      end
     end
 
-    it 'accepts overrides' do
-      policy = described_class.new(warm_after_days: 14, cold_after_days: 180)
-      expect(policy.warm_after_days).to eq(14)
-      expect(policy.cold_after_days).to eq(180)
+    it 'uses current retention windows after the live configuration is replaced' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      Legion::Settings[:data][:archival] = { warm_after_days: 0, cold_after_days: 30, batch_size: 25, tables: [] }
+      policy = described_class.from_settings
+      expect(policy.warm_cutoff).to eq(now)
+      expect(policy.cold_cutoff).to eq(now - (30 * 86_400))
+      expect(policy.tables).to eq([])
+
+      Legion::Settings[:data][:archival] = { warm_after_days: 2, cold_after_days: 40 }
+      policy = described_class.from_settings
+      expect(policy.warm_cutoff).to eq(now - (2 * 86_400))
+      expect(policy.cold_cutoff).to eq(now - (40 * 86_400))
+    end
+
+    it 'rejects an invalid configured policy instead of silently choosing defaults' do
+      Legion::Settings[:data][:archival] = false
+      expect { described_class.from_settings }.to raise_error(NoMethodError)
     end
   end
 

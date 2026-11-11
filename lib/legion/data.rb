@@ -17,6 +17,7 @@ require_relative 'data/rls'
 require_relative 'data/extract'
 require_relative 'data/audit_record'
 require_relative 'data/audit_log_hash_chain'
+require_relative 'data/task/status'
 
 unless Legion::Logging::Helper.method_defined?(:handle_exception)
   module Legion
@@ -83,6 +84,8 @@ module Legion
       end
 
       def setup_cache
+        return unless Legion::Settings[:data][:models][:loaded]
+
         cache_settings = Legion::Settings[:data][:cache]
         setup_static_cache if cache_settings[:static_cache]
         setup_external_cache if cache_settings[:auto_enable] && defined?(::Legion::Cache)
@@ -209,7 +212,7 @@ module Legion
       end
 
       def setup_external_cache
-        ttl = Legion::Settings[:data][:cache][:ttl] || 60
+        ttl = Legion::Settings[:data][:cache][:ttl]
         {
           Model::Relationship => 10,
           Model::Node         => 10,

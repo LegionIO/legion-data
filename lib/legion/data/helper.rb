@@ -20,7 +20,7 @@ module Legion
       end
 
       def data_connected?
-        defined?(Legion::Settings) && Legion::Settings[:data][:connected]
+        Legion::Settings[:data][:connected]
       end
 
       def data_connection

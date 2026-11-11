@@ -19,7 +19,7 @@ module Legion
       class << self
         include Legion::Logging::Helper
 
-        def archive!(policy: Policy.new, dry_run: false)
+        def archive!(policy: Policy.from_settings, dry_run: false)
           log.info "Archival run started dry_run=#{dry_run} tables=#{policy.tables.size}"
           results = {}
           policy.tables.each do |table_name|
